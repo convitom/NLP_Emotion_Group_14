@@ -410,11 +410,12 @@ def get_dataloaders(
     stage_cfg = cfg[stage]
     train_cfg = stage_cfg["training"]
 
-    data_dir    = data_cfg["data_dir"]
-    max_length  = int(data_cfg.get("max_length", 128))
-    batch_size  = int(train_cfg.get("batch_size", 32))
-    seed        = int(data_cfg.get("seed", 42))
-    auto_split  = bool(data_cfg.get("auto_split", True))
+    data_dir     = data_cfg["data_dir"]
+    max_length   = int(data_cfg.get("max_length", 128))
+    batch_size   = int(train_cfg.get("batch_size", 32))
+    seed         = int(data_cfg.get("seed", 42))
+    auto_split   = bool(data_cfg.get("auto_split", True))
+    num_workers  = int(data_cfg.get("num_workers", 4))
 
     model_name = stage_cfg["model"]["name"].lower()
     if model_name not in BACKBONE_REGISTRY:
@@ -507,16 +508,16 @@ def get_dataloaders(
         )
         train_loader = DataLoader(
             train_ds, batch_size=batch_size, sampler=sampler,
-            num_workers=4, pin_memory=True,
+            num_workers=num_workers, pin_memory=True,
         )
     else:
         train_loader = DataLoader(
             train_ds, batch_size=batch_size, shuffle=True,
-            num_workers=4, pin_memory=True,
+            num_workers=num_workers, pin_memory=True,
         )
 
-    val_loader  = DataLoader(val_ds,  batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
-    test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=4, pin_memory=True)
+    val_loader  = DataLoader(val_ds,  batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
+    test_loader = DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True)
 
     # ── pos_weight ────────────────────────────────────────────────────────────
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

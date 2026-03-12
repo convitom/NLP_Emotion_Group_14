@@ -36,7 +36,7 @@ import torch
 import torch.nn as nn
 from sklearn.metrics import accuracy_score, f1_score, precision_score, recall_score
 from torch.cuda.amp import GradScaler
-from tqdm import tqdm
+from tqdm.auto import tqdm
 from transformers import AutoModel
 
 _ROOT = Path(__file__).resolve().parents[1]
@@ -117,7 +117,7 @@ def _run_epoch(
     all_labels: List[np.ndarray] = []
 
     pbar = tqdm(loader, desc=f"Epoch {epoch}/{total_epochs} [{phase:>5}]",
-                leave=False, dynamic_ncols=True, unit="batch")
+                leave=True, dynamic_ncols=True, unit="batch", mininterval=1.0)
 
     ctx = torch.enable_grad() if is_train else torch.no_grad()
     with ctx:

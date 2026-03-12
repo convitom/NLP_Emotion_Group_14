@@ -36,6 +36,7 @@ data:
 
   max_length:  128
   seed:        42
+  num_workers: 2     # số worker cho DataLoader — Colab: 2, local GPU mạnh: 4, debug: 0
 
 #------------------------------------------------------------------------------
 #  Stage 1 — Binary: Neutral vs Has-Emotion
