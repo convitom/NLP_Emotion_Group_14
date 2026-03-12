@@ -61,9 +61,9 @@ e2e:
     aug_copies_common:    0
 
     use_weighted_sampler: true
-    sampler_power:        2.0
-    boost_very_rare:      5.0
-    boost_rare:           3.0
+    sampler_power:        0.7
+    boost_very_rare:      2.0
+    boost_rare:           1.5
     boost_common:         1.0
 
     pw_scale_very_rare: 2.0
