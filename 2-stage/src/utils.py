@@ -167,7 +167,7 @@ def get_optimizer(model: nn.Module, cfg: dict) -> optim.Optimizer:
 
     param_groups = [
         {"params": backbone_params,   "lr": lr,      "weight_decay": wd},
-        {"params": classifier_params, "lr": lr * 10, "weight_decay": wd},
+        {"params": classifier_params, "lr": lr * 3, "weight_decay": wd},
     ]
 
     if name == "adamw":  return optim.AdamW(param_groups)
