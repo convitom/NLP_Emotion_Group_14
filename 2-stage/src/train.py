@@ -149,9 +149,10 @@ def _run_epoch(
 
             loss_meter.update(loss.item(), lbls.size(0))
             if not is_train:
-                probs = torch.sigmoid(logits).cpu().numpy()
+                # Cast to float32 before numpy — bfloat16 is not supported by numpy
+                probs = torch.sigmoid(logits).float().cpu().numpy()
                 all_preds.append(apply_threshold(probs, threshold))
-                all_labels.append(lbls.cpu().numpy())
+                all_labels.append(lbls.float().cpu().numpy())
 
             pbar.set_postfix(loss=f"{loss_meter.avg:.4f}")
     pbar.close()

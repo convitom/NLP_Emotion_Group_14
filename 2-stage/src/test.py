@@ -170,8 +170,8 @@ def _infer(model, loader, device, desc="Inference") -> Tuple[np.ndarray, np.ndar
                 batch["input_ids"].to(device,      non_blocking=True),
                 batch["attention_mask"].to(device, non_blocking=True),
             )
-            probs_list.append(torch.sigmoid(logits).cpu().numpy())
-            labels_list.append(batch["labels"].numpy())
+            probs_list.append(torch.sigmoid(logits).float().cpu().numpy())
+            labels_list.append(batch["labels"].float().cpu().numpy())
     pbar.close()
     return np.vstack(probs_list), np.vstack(labels_list)
 
