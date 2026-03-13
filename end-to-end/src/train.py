@@ -179,12 +179,21 @@ def _run_epoch(
                 if scaler is not None:
                     scaler.scale(loss).backward()
                     scaler.unscale_(optimizer)
-                    nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    grad_norm = nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    if torch.isnan(grad_norm) or torch.isinf(grad_norm):
+                        print(f"\n[WARNING] NaN/Inf gradient (norm={grad_norm:.4f}) — skipping batch, resetting scaler")
+                        optimizer.zero_grad(set_to_none=True)
+                        scaler.update()  # scaler tự giảm scale factor, KHÔNG step optimizer
+                        continue
                     scaler.step(optimizer)
                     scaler.update()
                 else:
                     loss.backward()
-                    nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    grad_norm = nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    if torch.isnan(grad_norm) or torch.isinf(grad_norm):
+                        print(f"\n[WARNING] NaN/Inf gradient — skipping batch")
+                        optimizer.zero_grad(set_to_none=True)
+                        continue
                     optimizer.step()
                 if scheduler is not None:
                     scheduler.step()
@@ -240,7 +249,7 @@ def train(
     amp_dtype_str = BACKBONE_REGISTRY.get(model_key, {}).get("amp_dtype", "float16")
 
     if device.type == "cuda" and amp_dtype_str == "bfloat16":
-        use_amp, amp_dtype, use_scaler = True, torch.bfloat16, False
+        use_amp, amp_dtype, use_scaler = True, torch.bfloat16, True
     elif device.type == "cuda":
         use_amp, amp_dtype, use_scaler = True, torch.float16, True
     else:
