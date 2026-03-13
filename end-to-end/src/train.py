@@ -353,14 +353,9 @@ def train(
                 "num_labels":      num_labels,
                 "tier_indices":    tier_indices,
                 "model_state":     model.state_dict(),
-                "optimizer":       optimizer.state_dict(),
-                "scheduler":       scheduler.state_dict() if scheduler else None,
                 "val_macro_f1":    best_val_macro_f1,
                 "val_metrics":     best_metrics,
                 "threshold":       threshold,
-                "cfg":             cfg,
-                "run_dir":         run_dir,
-                "run_name":        run_name,
             }, ckpt_path)
             print(f"  ✓ Checkpoint saved → {ckpt_path}")
         else:

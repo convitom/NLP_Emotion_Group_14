@@ -181,7 +181,7 @@ def _load_checkpoint(run_dir: str, cfg: dict, device: torch.device):
     model.load_state_dict(ckpt["model_state"])
     model.eval()
     print(f"[test] Loaded checkpoint  epoch={ckpt.get('epoch','?')}  "
-          f"val_loss={ckpt.get('val_loss', float('nan')):.4f}")
+          f"val_macro_f1={ckpt.get('val_macro_f1', float('nan')):.4f}")
     return model, ckpt
 
 
