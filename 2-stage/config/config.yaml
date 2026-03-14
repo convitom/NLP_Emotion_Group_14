@@ -70,6 +70,16 @@ stage1:
     use_weighted_sampler: false           # not needed at 2.5:1 ratio
     pw_scale:             1.0            # pos_weight = (n_neg/n_pos)^pw_scale
 
+    # Option A — downsample emotion
+    downsample_majority: true
+    downsample_ratio:    1.0      # 1:1 balanced
+
+    # Option B — oversample neutral
+    oversample_minority: true
+    oversample_ratio:    1.0      # duplicate neutral lên ngang emotion
+
+    # Option C — WeightedSampler (có thể kết hợp với B)
+    use_weighted_sampler: true
 #------------------------------------------------------------------------------
 #  Stage 2 — Multi-Label: 6 Ekman Emotions
 #  Trained on emotion-only samples (neutral filtered out)
