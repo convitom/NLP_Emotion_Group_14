@@ -181,7 +181,7 @@ def _run_epoch(
                     scaler.unscale_(optimizer)
                     grad_norm = nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                     if torch.isnan(grad_norm) or torch.isinf(grad_norm):
-                        print(f"\n[WARNING] NaN/Inf gradient (norm={grad_norm:.4f}) — skipping batch, resetting scaler")
+                        print(f"\n[WARNING] NaN/Inf gradient (norm={grad_norm:.4f}) — skipping batch, resetting scaler. Đây là tính năng, ko phải bug :)")
                         optimizer.zero_grad(set_to_none=True)
                         scaler.update()  # scaler tự giảm scale factor, KHÔNG step optimizer
                         continue
