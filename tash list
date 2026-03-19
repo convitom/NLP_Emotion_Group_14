@@ -1,0 +1,50 @@
+[33m7f49292[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m)[m HEAD@{0}: reset: moving to origin/main
+[33m89488aa[m HEAD@{1}: commit: g
+[33mac34eaf[m HEAD@{2}: pull origin main: Merge made by the 'ort' strategy.
+[33m3737daf[m HEAD@{3}: commit: d
+[33m7734aa2[m HEAD@{4}: commit: đ
+[33m2e86783[m HEAD@{5}: commit: s
+[33m7bb7ea0[m HEAD@{6}: commit: f
+[33mec3e9b2[m HEAD@{7}: commit: d
+[33md5d4904[m HEAD@{8}: commit: d
+[33m1c090ee[m HEAD@{9}: commit: d
+[33m24f55ba[m HEAD@{10}: commit: d
+[33mf42b3bb[m HEAD@{11}: commit: d
+[33m683cfbe[m HEAD@{12}: commit: d
+[33m9188d85[m HEAD@{13}: commit: s
+[33m9ac960a[m HEAD@{14}: commit: f
+[33m2c95559[m HEAD@{15}: commit: d
+[33m87eb236[m HEAD@{16}: commit: d
+[33m7ff7fca[m HEAD@{17}: commit: f
+[33m5ad1aa7[m HEAD@{18}: commit: s
+[33m6857e67[m HEAD@{19}: commit: f
+[33m7c6603b[m HEAD@{20}: commit: d
+[33md540ac6[m HEAD@{21}: commit: s
+[33m81e8853[m HEAD@{22}: commit: d
+[33m07d3a5c[m HEAD@{23}: commit: d
+[33m3da4a09[m HEAD@{24}: commit: s
+[33m324eba5[m HEAD@{25}: commit: d
+[33md92fdc0[m HEAD@{26}: pull origin main --rebase (finish): returning to refs/heads/main
+[33md92fdc0[m HEAD@{27}: pull origin main --rebase (pick): d
+[33m79e78f8[m HEAD@{28}: pull origin main --rebase (pick): d
+[33ma26ad14[m HEAD@{29}: pull origin main --rebase (pick): d
+[33m2102d3d[m HEAD@{30}: pull origin main --rebase (start): checkout 2102d3d031d52717c7d6273ff237aca3c64a6276
+[33m82b3e1a[m HEAD@{31}: commit: d
+[33meae8939[m HEAD@{32}: commit: d
+[33mcfd28cd[m HEAD@{33}: commit: d
+[33m6010490[m HEAD@{34}: commit: d
+[33mcab7d5e[m HEAD@{35}: commit: d
+[33m15d2867[m HEAD@{36}: commit: d
+[33m80a3c3c[m HEAD@{37}: commit: s
+[33mfefe04c[m HEAD@{38}: commit: d
+[33m40d07cd[m HEAD@{39}: commit: s
+[33m91a9af7[m HEAD@{40}: commit: d
+[33m02f225b[m HEAD@{41}: commit: s
+[33m550f4a0[m HEAD@{42}: commit: d
+[33m5eaad69[m HEAD@{43}: commit: s
+[33m4200599[m HEAD@{44}: commit: s
+[33ma0dcf5c[m HEAD@{45}: commit: d
+[33mc39ac03[m HEAD@{46}: reset: moving to origin/main
+[33m8a87253[m HEAD@{47}: commit: s
+[33mfe2bc53[m HEAD@{48}: commit: d
+[33mc39ac03[m HEAD@{49}: clone: from https://github.com/convitom/NLP_Emotion_Group_14.git
