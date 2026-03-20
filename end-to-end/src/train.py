@@ -64,9 +64,15 @@ from models.loss import get_loss_fn
 class EncoderForClassification(nn.Module):
     """7-head multi-label classifier (6 emotions + neutral)."""
 
-    def __init__(self, pretrained_name: str, num_labels: int = NUM_CLASSES, dropout: float = 0.1):
+    def __init__(self, pretrained_name: str, num_labels: int = NUM_CLASSES,
+                 dropout: float = 0.1, from_scratch: bool = False):
         super().__init__()
-        self.backbone    = AutoModel.from_pretrained(pretrained_name)
+        if from_scratch:
+            from transformers import AutoConfig
+            config       = AutoConfig.from_pretrained(pretrained_name)
+            self.backbone = AutoModel.from_config(config)
+        else:
+            self.backbone = AutoModel.from_pretrained(pretrained_name)
         self.dropout     = nn.Dropout(dropout)
         hidden           = self.backbone.config.hidden_size
         self.classifiers = nn.ModuleList([nn.Linear(hidden, 1) for _ in range(num_labels)])
@@ -78,13 +84,49 @@ class EncoderForClassification(nn.Module):
         return torch.cat([h(cls) for h in self.classifiers], dim=1)   # (B, 7)
 
 
+def _apply_freeze_backbone(model: nn.Module) -> None:
+    """Freeze tất cả tham số backbone, chỉ để head trainable."""
+    for name, param in model.named_parameters():
+        if "classifiers" not in name:
+            param.requires_grad = False
+
+
 def build_model(stage_cfg: dict, num_labels: int = NUM_CLASSES) -> nn.Module:
     name = stage_cfg["model"]["name"].lower()
     if name not in BACKBONE_REGISTRY:
         raise ValueError(f"Unknown model '{name}'. Choose from: {' | '.join(BACKBONE_REGISTRY)}")
-    pretrained = BACKBONE_REGISTRY[name]["pretrained"]
-    dropout    = float(stage_cfg["model"].get("dropout", 0.1))
-    return EncoderForClassification(pretrained, num_labels=num_labels, dropout=dropout)
+    pretrained    = BACKBONE_REGISTRY[name]["pretrained"]
+    dropout       = float(stage_cfg["model"].get("dropout", 0.1))
+    training_mode = stage_cfg["training"].get("training_mode", "finetune").lower().strip()
+
+    valid_modes = {"finetune", "freeze_backbone", "from_scratch", "llrd"}
+    if training_mode not in valid_modes:
+        raise ValueError(
+            f"Unknown training_mode '{training_mode}'. "
+            f"Choose from: {' | '.join(sorted(valid_modes))}"
+        )
+
+    from_scratch = (training_mode == "from_scratch")
+    model = EncoderForClassification(
+        pretrained, num_labels=num_labels, dropout=dropout, from_scratch=from_scratch
+    )
+
+    if training_mode == "freeze_backbone":
+        _apply_freeze_backbone(model)
+        frozen = sum(p.numel() for p in model.parameters() if not p.requires_grad)
+        trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        print(f"[build_model] freeze_backbone — frozen={frozen:,}  trainable={trainable:,}")
+
+    elif training_mode == "from_scratch":
+        print(f"[build_model] from_scratch — backbone initialized with RANDOM weights (no pretrained)")
+
+    elif training_mode == "llrd":
+        print(f"[build_model] llrd — Layerwise LR Decay will be applied by optimizer")
+
+    else:
+        print(f"[build_model] finetune — full backbone fine-tuning")
+
+    return model
 
 
 # =============================================================================
@@ -179,12 +221,22 @@ def _run_epoch(
                 if scaler is not None:
                     scaler.scale(loss).backward()
                     scaler.unscale_(optimizer)
-                    nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    grad_norm = nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    if torch.isnan(grad_norm) or torch.isinf(grad_norm):
+                        print(f"\nNaN/Inf gradient (norm={grad_norm:.4f}) — skipping batch, resetting scaler. Đây là tính năng, ko phải bug :)")
+                        optimizer.zero_grad(set_to_none=True)
+                        scaler.update()  # scaler tự giảm scale factor, KHÔNG step optimizer
+                        continue
                     scaler.step(optimizer)
                     scaler.update()
                 else:
                     loss.backward()
-                    nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    clip = 0.3 if amp_dtype == torch.bfloat16 else 1.0
+                    grad_norm = nn.utils.clip_grad_norm_(model.parameters(), clip)
+                    if torch.isnan(grad_norm) or torch.isinf(grad_norm):
+                        print(f"\n[WARNING] NaN/Inf gradient — skipping batch")
+                        optimizer.zero_grad(set_to_none=True)
+                        continue
                     optimizer.step()
                 if scheduler is not None:
                     scheduler.step()
@@ -240,11 +292,17 @@ def train(
     amp_dtype_str = BACKBONE_REGISTRY.get(model_key, {}).get("amp_dtype", "float16")
 
     if device.type == "cuda" and amp_dtype_str == "bfloat16":
-        use_amp, amp_dtype, use_scaler = True, torch.bfloat16, False
+        use_amp    = True
+        amp_dtype  = torch.bfloat16
+        use_scaler = False 
     elif device.type == "cuda":
-        use_amp, amp_dtype, use_scaler = True, torch.float16, True
+        use_amp    = True
+        amp_dtype  = torch.float16
+        use_scaler = True
     else:
-        use_amp, amp_dtype, use_scaler = False, torch.float32, False
+        use_amp    = False
+        amp_dtype  = torch.float32
+        use_scaler = False
 
     # ── Run directory ─────────────────────────────────────────────────────────
     if run_dir is None:
@@ -344,14 +402,9 @@ def train(
                 "num_labels":      num_labels,
                 "tier_indices":    tier_indices,
                 "model_state":     model.state_dict(),
-                "optimizer":       optimizer.state_dict(),
-                "scheduler":       scheduler.state_dict() if scheduler else None,
                 "val_macro_f1":    best_val_macro_f1,
                 "val_metrics":     best_metrics,
                 "threshold":       threshold,
-                "cfg":             cfg,
-                "run_dir":         run_dir,
-                "run_name":        run_name,
             }, ckpt_path)
             print(f"  ✓ Checkpoint saved → {ckpt_path}")
         else:
@@ -398,11 +451,14 @@ def _save_config_summary(run_dir, cfg, info, n_params, n_train, n_val):
     A(f"  Path: {run_dir}")
     A("=" * 60)
     A("\n[Model]")
-    A(f"  name        : {model_name}")
-    A(f"  pretrained  : {pretrained}")
-    A(f"  dropout     : {stage_cfg['model'].get('dropout', 0.1)}")
-    A(f"  params      : {n_params:,}")
-    A(f"  num_labels  : {info.get('num_labels', NUM_CLASSES)}")
+    A(f"  name          : {model_name}")
+    A(f"  pretrained    : {pretrained}")
+    A(f"  dropout       : {stage_cfg['model'].get('dropout', 0.1)}")
+    A(f"  params        : {n_params:,}")
+    A(f"  num_labels    : {info.get('num_labels', NUM_CLASSES)}")
+    A(f"  training_mode : {stage_cfg['training'].get('training_mode', 'finetune')}")
+    if stage_cfg['training'].get('training_mode', 'finetune') == 'llrd':
+        A(f"  llrd_decay    : {stage_cfg['training'].get('llrd_decay_rate', 0.8)}")
     A("\n[Data]")
     A(f"  train_file  : {data_cfg.get('train_file', '?')}")
     A(f"  auto_split  : {data_cfg.get('auto_split', True)}")

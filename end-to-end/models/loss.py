@@ -72,11 +72,12 @@ class AsymmetricLoss(nn.Module):
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         p    = torch.sigmoid(logits)
-        pn   = (p - self.clip).clamp(min=0.0, max=1.0) if self.clip > 0 else p
-        lp   = targets       * torch.log(p.clamp(min=1e-8))
-        ln   = (1 - targets) * torch.log((1 - pn).clamp(min=1e-8))
-        if self.gamma_pos > 0: lp = ((1 - p)  ** self.gamma_pos) * lp
-        if self.gamma_neg > 0: ln = (pn        ** self.gamma_neg) * ln
+        pn   = (p - self.clip).clamp(min=1e-8, max=1.0 - 1e-8)
+        p_s  = p.clamp(min=1e-8, max=1.0 - 1e-8)
+        lp   = targets       * torch.log(p_s)
+        ln   = (1 - targets) * torch.log(1.0 - pn)
+        if self.gamma_pos > 0: lp = ((1.0 - p_s) ** self.gamma_pos) * lp
+        if self.gamma_neg > 0: ln = (pn           ** self.gamma_neg) * ln
         loss = -(lp + ln)
         return loss.mean() if self.reduction == "mean" else loss.sum() if self.reduction == "sum" else loss
 
@@ -132,11 +133,14 @@ class TieredPerClassASL(nn.Module):
 
     def _asl_col(self, p: torch.Tensor, t: torch.Tensor,
                   gp: float, gn: float, clip: float) -> torch.Tensor:
-        pn  = (p - clip).clamp(min=0.0, max=1.0) if clip > 0 else p
-        lp  = t       * torch.log(p.clamp(min=1e-8))
-        ln  = (1 - t) * torch.log((1 - pn).clamp(min=1e-8))
-        if gp > 0: lp = ((1 - p) ** gp) * lp
-        if gn > 0: ln = (pn       ** gn) * ln
+        # Luôn clamp pn dù clip=0 để tránh log(0) khi p→1
+        pn  = (p - clip).clamp(min=1e-8, max=1.0 - 1e-8)
+        p_s = p.clamp(min=1e-8, max=1.0 - 1e-8)   # p an toàn cho log và power
+        lp  = t       * torch.log(p_s)
+        ln  = (1 - t) * torch.log(1.0 - pn)
+        # Clamp base trước khi lũy thừa phân số để tránh grad = inf
+        if gp > 0: lp = ((1.0 - p_s) ** gp) * lp
+        if gn > 0: ln = (pn           ** gn) * ln
         return -(lp + ln)   # (B,)
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:

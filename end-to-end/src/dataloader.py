@@ -254,7 +254,7 @@ def compute_pos_weight(
     tier_indices:       Dict[str, List[int]],
 ) -> torch.Tensor:
     n            = len(dataset)
-    labels_mat   = dataset.labels_6
+    labels_mat   = dataset.labels_7
     pos_counts   = (labels_mat > 0).sum(axis=0).astype(np.float64)  # đếm số ROWS có class đó → luôn <= n
     pos_counts   = np.maximum(pos_counts, 1.0)
     neg_counts   = np.maximum(n - pos_counts, 1.0)                   # luôn >= 0

@@ -151,29 +151,181 @@ def get_existing_run_dir(cfg: dict) -> str:
 
 def get_optimizer(model: nn.Module, cfg: dict) -> optim.Optimizer:
     """
-    Build optimizer with separate param groups:
-      backbone   → lr from config
-      classifier → lr × 10
-    cfg must have a "training" key.
-    """
-    train_cfg = cfg["training"]
-    name = train_cfg.get("optimizer", "adamw").lower()
-    lr   = float(train_cfg.get("lr",           2e-5))
-    wd   = float(train_cfg.get("weight_decay", 0.01))
+    Build optimizer với param groups phù hợp từng training_mode:
 
+      finetune        backbone lr=lr,  head lr=lr*3
+      freeze_backbone chỉ train head (frozen params bị skip tự động)
+      from_scratch    toàn bộ model cùng lr (không split backbone/head)
+      llrd            Layerwise LR Decay — mỗi transformer layer nhận
+                      lr * decay_rate^depth, layer thấp nhất lr nhỏ nhất
+    """
+    train_cfg     = cfg["training"]
+    name          = train_cfg.get("optimizer", "adamw").lower()
+    lr            = float(train_cfg.get("lr",           2e-5))
+    wd            = float(train_cfg.get("weight_decay", 0.01))
+    training_mode = train_cfg.get("training_mode", "finetune").lower().strip()
+
+    def _make_optimizer(param_groups):
+        if name == "adamw": return optim.AdamW(param_groups)
+        if name == "adam":  return optim.Adam(param_groups)
+        if name == "sgd":   return optim.SGD(param_groups, momentum=0.9)
+        raise ValueError(f"Unknown optimizer: '{name}'")
+
+    # ── freeze_backbone: chỉ head được train ─────────────────────────────────
+    if training_mode == "freeze_backbone":
+        head_params = [p for n, p in model.named_parameters()
+                       if "classifiers" in n and p.requires_grad]
+        if not head_params:
+            raise RuntimeError("freeze_backbone: không tìm thấy tham số trainable nào!")
+        param_groups = [{"params": head_params, "lr": lr * 3, "weight_decay": wd}]
+        print(f"[optimizer] freeze_backbone — chỉ train head, lr={lr*3:.2e}")
+        return _make_optimizer(param_groups)
+
+    # ── from_scratch: toàn bộ model cùng lr (không cần split) ────────────────
+    if training_mode == "from_scratch":
+        all_params = [p for p in model.parameters() if p.requires_grad]
+        param_groups = [{"params": all_params, "lr": lr, "weight_decay": wd}]
+        print(f"[optimizer] from_scratch — train toàn bộ, lr={lr:.2e}")
+        return _make_optimizer(param_groups)
+
+    # ── llrd: Layerwise Learning Rate Decay ───────────────────────────────────
+    if training_mode == "llrd":
+        decay_rate = float(train_cfg.get("llrd_decay_rate", 0.8))
+        return _build_llrd_optimizer(model, lr, wd, decay_rate, name)
+
+    # ── finetune (default): backbone lr, head lr*3 ───────────────────────────
     backbone_params, classifier_params = [], []
     for pname, param in model.named_parameters():
-        (classifier_params if "classifier" in pname else backbone_params).append(param)
+        if not param.requires_grad:
+            continue
+        (classifier_params if "classifiers" in pname else backbone_params).append(param)
 
     param_groups = [
         {"params": backbone_params,   "lr": lr,      "weight_decay": wd},
-        {"params": classifier_params, "lr": lr * 3, "weight_decay": wd},
+        {"params": classifier_params, "lr": lr * 3,  "weight_decay": wd},
     ]
+    print(f"[optimizer] finetune — backbone lr={lr:.2e}, head lr={lr*3:.2e}")
+    return _make_optimizer(param_groups)
 
-    if name == "adamw":  return optim.AdamW(param_groups)
-    if name == "adam":   return optim.Adam(param_groups)
-    if name == "sgd":    return optim.SGD(param_groups, momentum=0.9)
-    raise ValueError(f"Unknown optimizer: '{name}'")
+
+def _build_llrd_optimizer(
+    model:      nn.Module,
+    base_lr:    float,
+    wd:         float,
+    decay_rate: float,
+    opt_name:   str,
+) -> optim.Optimizer:
+    """
+    Layerwise LR Decay cho transformer encoder.
+
+    Chiến lược:
+      - Classifiers (head)      : base_lr * 3          (lr cao nhất)
+      - Transformer layers      : base_lr * decay^depth (top→bottom)
+      - Embeddings              : base_lr * decay^(n_layers+1) (lr thấp nhất)
+      - Pooler (nếu có)         : base_lr
+
+    depth=0 là layer transformer cao nhất (gần head nhất).
+
+    Với decay_rate=0.8 và 12 layers BERT:
+      head=6e-5, L11=2e-5, L10=1.6e-5, ..., L0≈2.1e-6, emb≈1.7e-6
+    """
+    # Lấy danh sách transformer layers (hỗ trợ BERT/RoBERTa/DeBERTa/ELECTRA)
+    backbone = model.backbone
+    encoder_layers = None
+    for attr in ["encoder.layer", "encoder.layers", "transformer.layer"]:
+        obj = backbone
+        try:
+            for part in attr.split("."):
+                obj = getattr(obj, part)
+            encoder_layers = list(obj)
+            break
+        except AttributeError:
+            continue
+
+    if encoder_layers is None:
+        # Fallback: không nhận diện được cấu trúc → dùng finetune thường
+        print("[LLRD] Cảnh báo: không nhận diện được encoder layers, fallback sang finetune.")
+        backbone_params    = [p for n, p in model.named_parameters()
+                              if "classifiers" not in n and p.requires_grad]
+        classifier_params  = [p for n, p in model.named_parameters()
+                              if "classifiers" in n and p.requires_grad]
+        param_groups = [
+            {"params": backbone_params,  "lr": base_lr,     "weight_decay": wd},
+            {"params": classifier_params,"lr": base_lr * 3, "weight_decay": wd},
+        ]
+        return optim.AdamW(param_groups)
+
+    n_layers = len(encoder_layers)
+    param_groups: list = []
+    assigned: set = set()
+
+    # 1. Head (classifiers) — lr cao nhất
+    head_params = [(n, p) for n, p in model.named_parameters()
+                   if "classifiers" in n and p.requires_grad]
+    if head_params:
+        param_groups.append({
+            "params":       [p for _, p in head_params],
+            "lr":           base_lr * 3,
+            "weight_decay": wd,
+            "name":         "head",
+        })
+        assigned.update(id(p) for _, p in head_params)
+
+    # 2. Transformer layers — depth 0 = layer cao nhất
+    for depth, layer in enumerate(reversed(encoder_layers)):
+        layer_lr = base_lr * (decay_rate ** depth)
+        layer_params = [(n, p) for n, p in layer.named_parameters(recurse=True)
+                        if p.requires_grad and id(p) not in assigned]
+        if layer_params:
+            param_groups.append({
+                "params":       [p for _, p in layer_params],
+                "lr":           layer_lr,
+                "weight_decay": wd,
+                "name":         f"layer_{n_layers - 1 - depth}",
+            })
+            assigned.update(id(p) for _, p in layer_params)
+
+    # 3. Pooler (nếu có) — lr bằng base_lr
+    pooler_params = [(n, p) for n, p in backbone.named_parameters()
+                     if "pooler" in n and p.requires_grad and id(p) not in assigned]
+    if pooler_params:
+        param_groups.append({
+            "params":       [p for _, p in pooler_params],
+            "lr":           base_lr,
+            "weight_decay": wd,
+            "name":         "pooler",
+        })
+        assigned.update(id(p) for _, p in pooler_params)
+
+    # 4. Embeddings + LayerNorm đầu — lr thấp nhất
+    emb_lr = base_lr * (decay_rate ** n_layers)
+    emb_params = [(n, p) for n, p in backbone.named_parameters()
+                  if p.requires_grad and id(p) not in assigned]
+    if emb_params:
+        param_groups.append({
+            "params":       [p for _, p in emb_params],
+            "lr":           emb_lr,
+            "weight_decay": wd,
+            "name":         "embeddings",
+        })
+
+    # Log tóm tắt
+    print(f"[optimizer] llrd — {n_layers} layers, decay={decay_rate}")
+    print(f"  head      lr={base_lr*3:.2e}")
+    for g in param_groups:
+        if g.get("name", "").startswith("layer_"):
+            top_name = f"layer_{n_layers-1}"
+            bot_name = "layer_0"
+            if g["name"] == top_name:
+                print(f"  {g['name']} (top) lr={g['lr']:.2e}")
+            elif g["name"] == bot_name:
+                print(f"  {g['name']} (bottom) lr={g['lr']:.2e}")
+    print(f"  embeddings lr={emb_lr:.2e}")
+
+    if opt_name == "adamw": return optim.AdamW(param_groups)
+    if opt_name == "adam":  return optim.Adam(param_groups)
+    if opt_name == "sgd":   return optim.SGD(param_groups, momentum=0.9)
+    raise ValueError(f"Unknown optimizer: '{opt_name}'")
 
 
 def get_scheduler(optimizer, cfg: dict, num_training_steps: int):

@@ -137,12 +137,21 @@ def _run_epoch(
                 if scaler is not None:
                     scaler.scale(loss).backward()
                     scaler.unscale_(optimizer)
-                    nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    grad_norm = nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    if torch.isnan(grad_norm) or torch.isinf(grad_norm):
+                        print(f"\n[WARNING] NaN/Inf gradient — skipping batch")
+                        optimizer.zero_grad(set_to_none=True)
+                        scaler.update()
+                        continue
                     scaler.step(optimizer)
                     scaler.update()
                 else:
                     loss.backward()
-                    nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    grad_norm = nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                    if torch.isnan(grad_norm) or torch.isinf(grad_norm):
+                        print(f"\n[WARNING] NaN/Inf gradient — skipping batch")
+                        optimizer.zero_grad(set_to_none=True)
+                        continue
                     optimizer.step()
                 if scheduler is not None:
                     scheduler.step()
@@ -219,7 +228,7 @@ def train(
     amp_dtype_str = BACKBONE_REGISTRY.get(model_key, {}).get("amp_dtype", "float16")
 
     if device.type == "cuda" and amp_dtype_str == "bfloat16":
-        use_amp, amp_dtype, use_scaler = True, torch.bfloat16, False
+        use_amp, amp_dtype, use_scaler = True, torch.bfloat16, True
     elif device.type == "cuda":
         use_amp, amp_dtype, use_scaler = True, torch.float16, True
     else:
@@ -372,16 +381,10 @@ def train(
                 "num_labels":      num_labels,
                 "tier_indices":    tier_indices,
                 "model_state":     model.state_dict(),
-                "optimizer":       optimizer.state_dict(),
-                "scheduler":       scheduler.state_dict() if scheduler else None,
-                "val_loss":        best_val_loss,
                 "best_score":      best_score,
                 "score_key":       score_key,
                 "val_metrics":     best_metrics,
                 "threshold":       threshold,
-                "cfg":             cfg,
-                "run_dir":         run_dir,
-                "run_name":        run_name,
             }, ckpt_path)
             print(f"  ✓ Checkpoint saved ({score_key}={cur_score:.4f}) → {ckpt_path}")
         else:

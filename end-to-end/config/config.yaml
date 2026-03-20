@@ -36,19 +36,50 @@ data:
 
 e2e:
   model:
-    name:    "deberta"
+    name:    "bert"
     dropout: 0.2
 
   training:
     epochs:                  20
     batch_size:              32
     lr:                      2.0e-5
-    weight_decay:            0.01
+    weight_decay:            0.05
     optimizer:               "adamw"
     scheduler:               "cosine_warmup"
     warmup_ratio:            0.10
     early_stopping_patience: 5
     threshold:               0.5
+
+    # ── Training mode ──────────────────────────────────────────────────────
+    # Chọn một trong 4 chế độ:
+    #
+    #   "finetune"      (default) Fine-tune toàn bộ backbone + head.
+    #                   Backbone lr = lr, head lr = lr * 3.
+    #
+    #   "freeze_backbone" Freeze toàn bộ backbone (không update trọng số),
+    #                   chỉ train classification head.
+    #                   Nhanh hơn, ít overfit, hữu ích khi data ít hoặc
+    #                   muốn kiểm tra sức mạnh của feature extraction sẵn có.
+    #
+    #   "from_scratch"  Khởi tạo backbone với trọng số ngẫu nhiên
+    #                   (KHÔNG load pretrained). Train toàn bộ từ đầu.
+    #                   Cần nhiều data và epoch hơn. lr nên tăng lên ~1e-4.
+    #
+    #   "llrd"          Layerwise Learning Rate Decay — fine-tune toàn bộ
+    #                   nhưng các layer thấp (embedding, early transformer)
+    #                   nhận lr nhỏ hơn nhiều so với các layer cao và head.
+    #                   Hiệu quả khi data vừa (<50k), tránh catastrophic
+    #                   forgetting ở layer đầu, không cần freeze cứng.
+    #                   lr đặt cho TOP layer; các layer sâu hơn nhân thêm
+    #                   llrd_decay_rate mỗi bước (VD: 0.8^n).
+    #
+    training_mode: "finetune"
+
+    # ── LLRD-specific (chỉ dùng khi training_mode = "llrd") ───────────────
+    # llrd_decay_rate: Hệ số nhân lr cho mỗi layer xuống sâu hơn.
+    #   VD: 0.8 → layer top=lr, layer top-1=lr*0.8, layer top-2=lr*0.64...
+    #   Khuyến nghị: 0.75 - 0.90 (nhỏ hơn = chênh lệch lớn hơn).
+    llrd_decay_rate: 0.8
 
     loss: "per_class_asl"
 
@@ -56,8 +87,8 @@ e2e:
     rare_divisor:      1.0
 
     augment_rare:         true
-    aug_copies_very_rare: 4
-    aug_copies_rare:      2
+    aug_copies_very_rare: 2
+    aug_copies_rare:      1
     aug_copies_common:    0
 
     use_weighted_sampler: true

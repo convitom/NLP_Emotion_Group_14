@@ -40,6 +40,30 @@ Class counts in data1_train.csv:
 num_workers:
     Set via config['data']['num_workers'] (default 4).
     Pass 0 to disable multiprocessing (useful for debugging or Windows).
+
+Imbalance strategy for Stage 1 (binary: has_emotion vs neutral)
+────────────────────────────────────────────────────────────────
+Three mutually-exclusive options, controlled by config stage1.training:
+
+  Option A — downsample majority (default off):
+      downsample_majority: true
+      downsample_ratio:    1.0   # 1.0=1:1, 2.0=2:1, ...
+      Pro: mỗi sample gốc giữ nguyên, không mất thông tin thống kê
+      Con: dataset nhỏ hơn → ít epochs thực sự
+
+  Option B — oversample minority (default off):
+      oversample_minority: true
+      oversample_ratio:    1.0   # 1.0=1:1, 2.0=2:1, ...
+      Pro: giữ toàn bộ data gốc, thêm copies của minority
+      Con: minority bị repeat → risk overfit trên minority
+
+  Option C — WeightedRandomSampler (default off):
+      use_weighted_sampler: true
+      Pro: không thay đổi dataset, re-weight mỗi epoch
+      Con: majority vẫn xuất hiện đủ, model thấy đủ diversity
+
+  Có thể kết hợp B + C để boost mạnh hơn.
+  Không nên kết hợp A + B (redundant).
 """
 
 from __future__ import annotations
@@ -126,6 +150,84 @@ def _synonym_replace(text: str, n: int = 2, seed: int = None) -> str:
 
 
 # =============================================================================
+#  Stage 1 resampling helpers  [MOI THEM]
+# =============================================================================
+
+def _resample_stage1(
+    texts:       List[str],
+    labels_6:    np.ndarray,
+    has_emotion: np.ndarray,
+    mode:        str,
+    ratio:       float,
+    seed:        int = 42,
+) -> Tuple[List[str], np.ndarray, np.ndarray]:
+    """
+    Resample stage1 data de can bang has_emotion vs neutral.
+    Dataset-agnostic: tu phat hien class nao la da so / thieu so.
+
+    Args:
+        mode : "downsample" bo bot samples cua class da so.
+               "oversample" duplicate minority den khi dat ratio.
+        ratio: ti le da so / thieu so sau resampling.
+               1.0 -> 1:1 balanced | 2.0 -> 2:1 | 0.0 -> tat
+
+    Returns:
+        (texts, labels_6, has_emotion) sau resampling.
+    """
+    if ratio <= 0.0:
+        return texts, labels_6, has_emotion
+
+    texts       = list(texts)
+    n_emotion   = int(has_emotion.sum())
+    n_neutral   = int(len(has_emotion) - n_emotion)
+    rng         = np.random.default_rng(seed)
+
+    emotion_idx = np.where(has_emotion > 0)[0]
+    neutral_idx = np.where(has_emotion == 0)[0]
+
+    if n_emotion >= n_neutral:
+        majority_idx, minority_idx = emotion_idx, neutral_idx
+        majority_label = "emotion"
+    else:
+        majority_idx, minority_idx = neutral_idx, emotion_idx
+        majority_label = "neutral"
+
+    n_min = len(minority_idx)
+    n_maj = len(majority_idx)
+
+    if mode == "downsample":
+        keep_n       = min(int(n_min * ratio), n_maj)
+        kept_maj_idx = rng.choice(majority_idx, size=keep_n, replace=False)
+        final_idx    = np.sort(np.concatenate([kept_maj_idx, minority_idx]))
+        texts_out    = [texts[i]  for i in final_idx]
+        labels_out   = labels_6[final_idx]
+        has_em_out   = has_emotion[final_idx]
+
+    elif mode == "oversample":
+        target_min   = min(int(n_maj * ratio), n_maj * 10)
+        extra_needed = max(0, target_min - n_min)
+        if extra_needed == 0:
+            return texts, labels_6, has_emotion
+        dup_idx      = rng.choice(minority_idx, size=extra_needed, replace=True)
+        extra_texts  = [texts[i]  for i in dup_idx]
+        extra_labels = labels_6[dup_idx]
+        extra_has_em = has_emotion[dup_idx]
+        texts_out    = texts + extra_texts
+        labels_out   = np.vstack([labels_6,    extra_labels])
+        has_em_out   = np.concatenate([has_emotion, extra_has_em])
+
+    else:
+        raise ValueError(f"mode must be 'downsample' or 'oversample', got '{mode}'")
+
+    n_new_emotion = int(has_em_out.sum())
+    n_new_neutral = len(has_em_out) - n_new_emotion
+    print(f"[DataLoader] stage1 {mode} (ratio={ratio}, majority={majority_label}): "
+          f"{len(has_emotion)} -> {len(has_em_out)} samples  "
+          f"(emotion={n_new_emotion}, neutral={n_new_neutral})")
+    return texts_out, labels_out, has_em_out
+
+
+# =============================================================================
 #  Tier classification
 # =============================================================================
 
@@ -189,10 +291,14 @@ class EkmanDataset(Dataset):
         tokenizer,
         max_length:          int  = 128,
         stage:               str  = "stage2",
-        emotion_only:        bool = False,
-        augment_rare:        bool = False,
+        emotion_only:        bool  = False,
+        augment_rare:        bool  = False,
         aug_copies_per_tier: Dict[str, int]       = None,
         tier_indices:        Dict[str, List[int]] = None,
+        # [MOI] stage1 resampling ─────────────────────────────────────────
+        resample_mode:       str   = "",    # ""=off | "downsample" | "oversample"
+        resample_ratio:      float = 1.0,   # target majority:minority ratio
+        resample_seed:       int   = 42,
     ) -> None:
         self.tokenizer  = tokenizer
         self.max_length = max_length
@@ -211,6 +317,14 @@ class EkmanDataset(Dataset):
             texts    = [t for t, m in zip(texts, mask) if m]
             labels_6 = labels_6[mask]
             has_emotion = has_emotion[mask]
+
+        # [MOI] Resample stage1: downsample hoac oversample tren data goc
+        # (truoc augmentation de khong bị lẫn copies vào resampling)
+        if stage == "stage1" and resample_mode in ("downsample", "oversample"):
+            texts, labels_6, has_emotion = _resample_stage1(
+                texts, labels_6, has_emotion,
+                mode=resample_mode, ratio=resample_ratio, seed=resample_seed,
+            )
 
         # Augmentation (stage2 only)
         if augment_rare and stage == "stage2":
@@ -510,26 +624,62 @@ def get_dataloaders(
         "common":    int(train_cfg.get("aug_copies_common",    0)),
     }
 
+    # [MOI] Stage 1 resampling config
+    #   downsample_majority: true  +  downsample_ratio: 1.0
+    #   oversample_minority: true  +  oversample_ratio: 1.0
+    #   (co the bat dong thoi de ket hop, but thong thuong chon 1)
+    resample_mode  = ""
+    resample_ratio = 1.0
+    if stage == "stage1":
+        if bool(train_cfg.get("downsample_majority", False)):
+            resample_mode  = "downsample"
+            resample_ratio = float(train_cfg.get("downsample_ratio", 1.0))
+        elif bool(train_cfg.get("oversample_minority", False)):
+            resample_mode  = "oversample"
+            resample_ratio = float(train_cfg.get("oversample_ratio", 1.0))
+
     # ── Build datasets ────────────────────────────────────────────────────────
     train_ds = EkmanDataset(
         train_texts, train_labels, tokenizer, max_length,
         stage=stage, emotion_only=emotion_only_train,
         augment_rare=augment_rare, aug_copies_per_tier=aug_copies,
         tier_indices=tier_indices,
+        resample_mode=resample_mode,   # [MOI]
+        resample_ratio=resample_ratio, # [MOI]
+        resample_seed=seed,            # [MOI]
     )
     val_ds = EkmanDataset(
         val_texts, val_labels, tokenizer, max_length,
         stage=stage, emotion_only=emotion_only_train,
+        # val/test: khong resample, danh gia tren phan phoi that
     )
     test_ds = EkmanDataset(
         test_texts, test_labels, tokenizer, max_length,
         stage=stage, emotion_only=emotion_only_train,
     )
 
-    # ── Sampler (Stage 2 only) ────────────────────────────────────────────────
-    sampler = None
-    use_sampler = bool(train_cfg.get("use_weighted_sampler", stage == "stage2"))
-    if use_sampler and stage == "stage2":
+    # ── Sampler ───────────────────────────────────────────────────────────────
+    # Stage 1: use_weighted_sampler co the ket hop voi oversample de boost them
+    # Stage 2: three-tier sampler cho rare/very_rare classes
+    sampler     = None
+    use_sampler = bool(train_cfg.get("use_weighted_sampler", False))
+
+    if use_sampler and stage == "stage1":
+        # [MOI] Binary sampler: weight ngach nho hon cao hon
+        n_pos = float(train_ds.has_emotion.sum())
+        n_neg = float(len(train_ds) - n_pos)
+        w_pos = 1.0 / max(n_pos, 1.0)
+        w_neg = 1.0 / max(n_neg, 1.0)
+        sample_weights = np.where(train_ds.has_emotion > 0, w_pos, w_neg)
+        sampler = WeightedRandomSampler(
+            weights=torch.from_numpy(sample_weights).float(),
+            num_samples=len(train_ds),
+            replacement=True,
+        )
+        print(f"[DataLoader] Stage1 WeightedSampler: "
+              f"w_emotion={w_pos:.2e}  w_neutral={w_neg:.2e}  (effective ~1:1)")
+
+    elif use_sampler and stage == "stage2":
         sampler = build_weighted_sampler(
             train_ds,
             sampler_power=   float(train_cfg.get("sampler_power",   2.0)),
