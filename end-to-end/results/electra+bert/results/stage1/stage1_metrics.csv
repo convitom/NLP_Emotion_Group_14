@@ -1,0 +1,2 @@
+model,threshold,accuracy,f1_emotion,precision,recall,macro_f1,epoch
+electra,0.35,0.8449,0.9051,0.8692,0.944,0.7408,3

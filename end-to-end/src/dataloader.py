@@ -43,8 +43,8 @@ from transformers import AutoTokenizer
 BACKBONE_REGISTRY: Dict[str, Dict[str, str]] = {
     "bert":    {"pretrained": "google-bert/bert-base-uncased",     "amp_dtype": "float16"},
     "roberta": {"pretrained": "FacebookAI/roberta-base",           "amp_dtype": "float16"},
-    "deberta": {"pretrained": "microsoft/deberta-v3-base",         "amp_dtype": "bfloat16"},
     "electra": {"pretrained": "google/electra-base-discriminator", "amp_dtype": "float16"},
+    "deberta": {"pretrained": "microsoft/deberta-v3-base",         "amp_dtype": "bfloat16"},
 }
 
 # =============================================================================

@@ -1,0 +1,2 @@
+stage1_model,stage2_model,micro_f1,macro_f1,weighted_f1,hamming,subset_acc,stage1_acc,stage1_f1
+electra,bert,0.6964,0.6565,0.6918,0.1135,0.5623,0.8449,0.9051

@@ -1,0 +1,50 @@
+============================================================
+  Config Summary  —  STAGE1
+  Run : electra+bert
+  Path: /content/drive/MyDrive/run_2_stage/electra+bert
+============================================================
+
+[Model]
+  name        : electra
+  pretrained  : google/electra-base-discriminator
+  dropout     : 0.1
+  params      : 108,892,417
+  num_labels  : 1
+
+[Data]
+  train_file  : data1_train.csv
+  auto_split  : False
+  val_ratio   : 0.1
+  test_ratio  : 0.1
+  max_length  : 128
+  seed        : 42
+  n_train     : 50248
+  n_val       : 6312
+  n_test      : 0
+
+[Class Counts]
+  has_emotion : 35751
+  neutral     : 14497
+
+[Augmentation]
+  augment_rare: False
+
+[Sampler]
+  use_weighted_sampler: False
+
+[pos_weight]
+  pw_scale            : 1.0
+
+[Loss]
+  loss                : bce_weighted
+
+[Training]
+  epochs              : 10
+  batch_size          : 32
+  lr                  : 2e-05
+  weight_decay        : 0.01
+  optimizer           : adamw
+  scheduler           : cosine_warmup
+  warmup_ratio        : 0.1
+  early_stop_patience : 50
+  threshold           : 0.5

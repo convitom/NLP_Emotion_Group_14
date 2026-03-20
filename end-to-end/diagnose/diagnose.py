@@ -24,6 +24,14 @@ warnings.filterwarnings("ignore")
 # =============================================================================
 #  Constants
 # =============================================================================
+hieu = "train"
+DATA_PATH = r"D:\USTH\nlp\NLP_Emotion_Group_14\end-to-end\data\data1_{hieu}.csv".format(hieu=hieu)
+MODEL_PATH = r"end-to-end\results\bert\checkpoints\bert_e2e_emotion.pth"
+OUT_DIR = r"end-to-end\diagnose"
+MAX_SAMPLES = 80000
+
+plot_overlap = 1 
+plot_tsne_tfidf = 1
 
 EMOTION_COLS  = ["anger", "disgust", "fear", "joy", "sadness", "surprise"]
 CLASS_NAMES   = EMOTION_COLS + ["neutral"]
@@ -51,6 +59,22 @@ def load_data(csv_path: str):
     labels_7 = np.concatenate([labels_6, neutral], axis=1)
     return texts, labels_7
 
+def get_model_suffix(model_path: Optional[str]):
+    if model_path is None:
+        return ""
+
+    name = os.path.basename(model_path)          # electra_e2e_emotion.pth
+    name = os.path.splitext(name)[0]             # electra_e2e_emotion
+    name = name.replace("_emotion", "")          # electra_e2e
+    return name
+
+def get_dataset_suffix(data_path: Optional[str]):
+    if data_path is None:
+        return ""
+
+    name = os.path.basename(data_path)          # data1_train.csv
+    name = os.path.splitext(name)[0]             # data1_train
+    return name
 
 def get_single_label_mask(labels_7):
     return labels_7.sum(axis=1) == 1
@@ -151,14 +175,42 @@ def plot_class_overlap(X, class_ids, out_path):
 
     centroids = []
     for i in range(NUM_CLASSES):
-        centroids.append(X[cids == i].mean(axis=0))
+        cls_vecs = X[cids == i]
+        if len(cls_vecs) == 0:
+            centroids.append(np.zeros(X.shape[1]))
+        else:
+            centroids.append(cls_vecs.mean(axis=0))
+
     centroids = np.vstack(centroids)
 
     sim = cosine_similarity(centroids)
 
-    plt.imshow(sim)
-    plt.colorbar()
-    plt.savefig(out_path)
+    plt.figure(figsize=(8, 6))
+
+    # 🔥 dùng colormap đẹp hơn (đậm khi cao)
+    im = plt.imshow(sim, cmap="YlOrRd", vmin=0, vmax=1)
+
+    plt.colorbar(im)
+
+    # 🔥 set label = tên class
+    plt.xticks(ticks=np.arange(NUM_CLASSES), labels=CLASS_NAMES, rotation=45)
+    plt.yticks(ticks=np.arange(NUM_CLASSES), labels=CLASS_NAMES)
+
+    # 🔥 hiển thị số trong từng ô
+    for i in range(NUM_CLASSES):
+        for j in range(NUM_CLASSES):
+            value = sim[i, j]
+            plt.text(
+                j, i,
+                f"{value:.2f}",
+                ha="center", va="center",
+                color="black" if value < 0.7 else "white",
+                fontsize=8
+            )
+
+    plt.title("Class Overlap (Cosine Similarity)")
+    plt.tight_layout()
+    plt.savefig(out_path, dpi=300)
     plt.close()
 
     return sim
@@ -174,6 +226,8 @@ def diagnose(
     out_dir=None,
     max_samples=8000,
     use_model=True,
+    plot_overlap=True,
+    plot_tsne_tfidf=True,
 ):
     if out_dir is None:
         out_dir = "diagnose"
@@ -187,16 +241,26 @@ def diagnose(
         texts = [texts[i] for i in idx]
         class_ids = class_ids[idx]
 
-    print("Extract TF-IDF...")
-    X_tfidf = extract_tfidf(texts)
+    suffix_model = get_model_suffix(model_path)
+    suffix_model = f"_{suffix_model}" if suffix_model else ""
+    suffix_dataset = get_dataset_suffix(data_path)
+    suffix_dataset = f"_{suffix_dataset}" if suffix_dataset else ""
+    
+    if plot_tsne_tfidf:
+        print("Extract TF-IDF...")
+        X_tfidf = extract_tfidf(texts)
 
-    print("t-SNE TF-IDF...")
-    emb = reduce_to_2d(X_tfidf)
-    plot_tsne(emb, class_ids, os.path.join(out_dir, "tsne_tfidf.png"))
+        print("t-SNE TF-IDF...")
+        emb = reduce_to_2d(X_tfidf)
+        
+        
+        
+        plot_tsne(emb, class_ids, os.path.join(out_dir, f"tsne_tfidf{suffix_dataset}.png"))
 
-    print("Overlap...")
-    plot_class_overlap(X_tfidf, class_ids,
-                       os.path.join(out_dir, "class_overlap.png"))
+    if plot_overlap:
+        print("Overlap...")
+        plot_class_overlap(X_tfidf, class_ids,
+                        os.path.join(out_dir, f"class_overlap{suffix_dataset}.png"))
 
     if use_model and model_path is not None:
         print("Extract model embeddings...")
@@ -205,7 +269,7 @@ def diagnose(
         if X_model is not None:
             emb = reduce_to_2d(X_model)
             plot_tsne(emb, class_ids,
-                      os.path.join(out_dir, "tsne_model.png"))
+                      os.path.join(out_dir, f"tsne_model{suffix_model}{suffix_dataset}.png"))
 
     print(f"Done. Output: {out_dir}")
 
@@ -214,10 +278,7 @@ def diagnose(
 # CONFIG
 # =============================================================================
 
-DATA_PATH = r"D:\USTH\nlp\NLP_Emotion_Group_14\end-to-end\data\data1_train.csv"
-MODEL_PATH = r"D:\USTH\nlp\electra\best.pth"
-OUT_DIR = None
-MAX_SAMPLES = 8000
+
 
 if __name__ == "__main__":
     diagnose(

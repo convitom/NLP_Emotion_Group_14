@@ -1,0 +1,2 @@
+model,micro_f1,macro_f1,weighted_f1,hamming,subset_acc,epoch
+bert,0.7711,0.7201,0.767,0.1051,0.6061,3

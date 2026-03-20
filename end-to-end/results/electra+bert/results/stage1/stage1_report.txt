@@ -1,0 +1,18 @@
+Stage 1 — Binary (Neutral vs Has-Emotion)
+Model: electra | Epoch: 3
+Best threshold: 0.35  (val F1=0.8691)
+
+Accuracy    : 0.8449
+F1 (emotion): 0.9051
+Precision   : 0.8692
+Recall      : 0.9440
+Macro F1    : 0.7408
+
+              precision    recall  f1-score   support
+
+     neutral       0.71      0.49      0.58      1883
+ has_emotion       0.87      0.94      0.91      6803
+
+    accuracy                           0.84      8686
+   macro avg       0.79      0.72      0.74      8686
+weighted avg       0.83      0.84      0.83      8686

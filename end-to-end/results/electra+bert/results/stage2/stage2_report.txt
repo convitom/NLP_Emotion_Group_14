@@ -1,0 +1,29 @@
+Stage 2 — Multi-Label 6 Ekman Emotions (emotion-only test)
+Model: bert | Epoch: 3
+Per-class thresholds:
+  anger       : 0.50
+  disgust     : 0.55
+  fear        : 0.70
+  joy         : 0.40
+  sadness     : 0.90
+  surprise    : 0.60
+
+Micro F1: 0.7711
+Macro F1: 0.7201
+Weighted F1: 0.7670
+Hamming: 0.1051
+Subset Acc: 0.6061
+
+              precision    recall  f1-score   support
+
+       anger       0.74      0.73      0.73      1787
+     disgust       0.72      0.64      0.68      1219
+        fear       0.74      0.70      0.72       578
+         joy       0.86      0.92      0.89      3699
+     sadness       0.76      0.59      0.66      1412
+    surprise       0.64      0.63      0.64       800
+
+   micro avg       0.78      0.76      0.77      9495
+   macro avg       0.74      0.70      0.72      9495
+weighted avg       0.78      0.76      0.77      9495
+ samples avg       0.81      0.81      0.79      9495

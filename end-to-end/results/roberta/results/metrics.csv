@@ -1,0 +1,2 @@
+model,micro_f1,macro_f1,weighted_f1,hamming,subset_acc,epoch
+roberta,0.7068,0.6715,0.7083,0.1143,0.5043,3

@@ -1,0 +1,31 @@
+E2E Single-Stage — 7 Classes
+Model: bert | Epoch: 2
+Per-class thresholds:
+  anger       : 0.45
+  disgust     : 0.60
+  fear        : 0.65
+  joy         : 0.45
+  sadness     : 0.65
+  surprise    : 0.50
+  neutral     : 0.40
+
+Micro F1: 0.6998
+Macro F1: 0.6629
+Weighted F1: 0.7008
+Hamming: 0.1129
+Subset Acc: 0.5139
+
+              precision    recall  f1-score   support
+
+       anger       0.69      0.63      0.66      1787
+     disgust       0.70      0.58      0.63      1219
+        fear       0.72      0.67      0.70       578
+         joy       0.83      0.84      0.83      3699
+     sadness       0.73      0.58      0.65      1412
+    surprise       0.49      0.59      0.54       800
+     neutral       0.56      0.73      0.63      1883
+
+   micro avg       0.70      0.70      0.70     11378
+   macro avg       0.67      0.66      0.66     11378
+weighted avg       0.71      0.70      0.70     11378
+ samples avg       0.71      0.74      0.70     11378

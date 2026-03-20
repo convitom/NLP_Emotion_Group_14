@@ -1,0 +1,25 @@
+End-to-End Pipeline — 7 Classes
+Stage1: electra (epoch 3)
+Stage2: bert (epoch 3)
+S1 threshold: 0.35
+S2 thresholds: [0.5, 0.55, 0.7, 0.4, 0.9, 0.6]
+
+Micro F1: 0.6964  Macro F1: 0.6565
+Weighted F1: 0.6918  Hamming: 0.1135
+Subset Acc: 0.5623
+Stage1 Acc: 0.8449  Stage1 F1: 0.9051
+
+              precision    recall  f1-score   support
+
+       anger       0.64      0.68      0.66      1787
+     disgust       0.68      0.64      0.66      1219
+        fear       0.72      0.69      0.70       578
+         joy       0.78      0.88      0.83      3699
+     sadness       0.72      0.59      0.64      1412
+    surprise       0.48      0.57      0.52       800
+     neutral       0.68      0.51      0.58      1883
+
+   micro avg       0.70      0.70      0.70     11378
+   macro avg       0.67      0.65      0.66     11378
+weighted avg       0.70      0.70      0.69     11378
+ samples avg       0.72      0.71      0.70     11378

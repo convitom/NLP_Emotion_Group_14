@@ -1,0 +1,42 @@
+============================================================
+  Config Summary  —  E2E Single-Stage (7-class)
+  Run : roberta
+  Path: /content/drive/MyDrive/run_e2e/roberta
+============================================================
+
+[Model]
+  name        : roberta
+  pretrained  : FacebookAI/roberta-base
+  dropout     : 0.2
+  params      : 124,651,015
+  num_labels  : 7
+
+[Data]
+  train_file  : data1_train.csv
+  auto_split  : False
+  max_length  : 128
+  num_workers : 2
+  n_train     : 58929
+  n_val       : 6312
+
+[Class Counts & Tiers]
+  anger       :  10526  [common]
+  disgust     :   6732  [rare]
+  fear        :   3882  [rare]
+  joy         :  21036  [common]
+  sadness     :  10784  [rare]
+  surprise    :   5813  [common]
+  neutral     :  14497  [common]
+
+[Training]
+  epochs                      : 20
+  batch_size                  : 32
+  lr                          : 2e-05
+  weight_decay                : 0.05
+  optimizer                   : adamw
+  scheduler                   : cosine_warmup
+  warmup_ratio                : 0.1
+  early_stopping_patience     : 5
+  threshold                   : 0.5
+  loss                        : per_class_asl
+  use_weighted_sampler        : True
