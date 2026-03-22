@@ -83,7 +83,7 @@ e2e:
 
     loss: "per_class_asl"
 
-    very_rare_divisor: 3.0
+    very_rare_divisor: 2.0
     rare_divisor:      1.0
 
     augment_rare:         true
