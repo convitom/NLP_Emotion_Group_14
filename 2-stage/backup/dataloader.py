@@ -56,10 +56,7 @@ from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from transformers import AutoTokenizer
 
-
-# =============================================================================
 #  Backbone registry
-# =============================================================================
 
 BACKBONE_REGISTRY: Dict[str, Dict[str, str]] = {
     "bert":    {"pretrained": "google-bert/bert-base-uncased",     "amp_dtype": "float16"},
@@ -68,9 +65,7 @@ BACKBONE_REGISTRY: Dict[str, Dict[str, str]] = {
     "electra": {"pretrained": "google/electra-base-discriminator", "amp_dtype": "float16"},
 }
 
-# =============================================================================
 #  Label metadata
-# =============================================================================
 
 EMOTION_NAMES:   List[str] = ["anger", "disgust", "fear", "joy", "sadness", "surprise"]
 NUM_EMOTIONS:    int        = len(EMOTION_NAMES)   # 6
@@ -78,9 +73,7 @@ ALL_CLASS_NAMES: List[str] = EMOTION_NAMES + ["neutral"]
 NUM_ALL_CLASSES: int        = 7
 
 
-# =============================================================================
 #  Synonym augmentation
-# =============================================================================
 
 _SYNONYM_MAP: Dict[str, List[str]] = {
     "happy":     ["glad", "pleased", "delighted", "joyful"],
@@ -124,11 +117,7 @@ def _synonym_replace(text: str, n: int = 2, seed: int = None) -> str:
             replaced += 1
     return " ".join(words)
 
-
-# =============================================================================
 #  Tier classification
-# =============================================================================
-
 def compute_tiers(
     label_counts:  np.ndarray,
     very_rare_div: float = 3.0,
@@ -161,10 +150,8 @@ def compute_tiers(
     return very_rare, rare, common
 
 
-# =============================================================================
-#  Dataset
-# =============================================================================
 
+#  Dataset
 class EkmanDataset(Dataset):
     """
     Dataset for two-stage Ekman classification.
@@ -264,10 +251,7 @@ class EkmanDataset(Dataset):
             item["labels"] = torch.tensor(self.labels_6[idx],      dtype=torch.float32)
         return item
 
-
-# =============================================================================
 #  Weighted sampler — three-tier
-# =============================================================================
 
 def build_weighted_sampler(
     dataset:         EkmanDataset,
@@ -303,9 +287,7 @@ def build_weighted_sampler(
     )
 
 
-# =============================================================================
 #  pos_weight helpers
-# =============================================================================
 
 def compute_pos_weight_stage1(
     dataset: EkmanDataset,
@@ -358,10 +340,8 @@ def compute_pos_weight_stage2(
     return torch.tensor(pw, dtype=torch.float32, device=device)
 
 
-# =============================================================================
-#  CSV loading & splitting
-# =============================================================================
 
+#  CSV loading & splitting
 def _load_csv(filepath: str) -> Tuple[List[str], np.ndarray]:
     df      = pd.read_csv(filepath)
     missing = [c for c in EMOTION_NAMES if c not in df.columns]
@@ -392,9 +372,7 @@ def _split_data(
     return tr_t, tr_l, val_t, val_l, test_t, test_l
 
 
-# =============================================================================
 #  DataLoader factory
-# =============================================================================
 
 def _make_loader(
     dataset:     EkmanDataset,
@@ -413,7 +391,6 @@ def _make_loader(
         pin_memory=True,
         persistent_workers=(num_workers > 0),
     )
-
 
 def get_dataloaders(
     cfg:   dict,
@@ -442,7 +419,7 @@ def get_dataloaders(
     batch_size  = int(train_cfg.get("batch_size", 32))
     seed        = int(data_cfg.get("seed",        42))
     auto_split  = bool(data_cfg.get("auto_split", True))
-    # ── num_workers from config — set 0 to disable multiprocessing ───────────
+    # num_workers from config — set 0 to disable multiprocessing 
     num_workers = int(data_cfg.get("num_workers", 4))
 
     model_name = stage_cfg["model"]["name"].lower()
@@ -454,7 +431,7 @@ def get_dataloaders(
     pretrained = BACKBONE_REGISTRY[model_name]["pretrained"]
     tokenizer  = AutoTokenizer.from_pretrained(pretrained)
 
-    # ── Load raw data ─────────────────────────────────────────────────────────
+    # Load raw data 
     train_path = os.path.join(data_dir, data_cfg.get("train_file", "data1_train.csv"))
     val_path   = os.path.join(data_dir, data_cfg.get("val_file",   "data1_val.csv"))
     test_path  = os.path.join(data_dir, data_cfg.get("test_file",  "data1_test.csv"))
@@ -477,7 +454,7 @@ def get_dataloaders(
         val_texts,   val_labels   = _load_csv(val_path)
         test_texts,  test_labels  = _load_csv(test_path)
 
-    # ── Compute tiers from TRAIN label counts ─────────────────────────────────
+    # Compute tiers from TRAIN label counts
     train_counts  = train_labels.sum(axis=0)
     very_rare_div = float(train_cfg.get("very_rare_divisor", 3.0))
     rare_div      = float(train_cfg.get("rare_divisor",      1.0))
@@ -491,7 +468,7 @@ def get_dataloaders(
                 "rare"      if i in rare_idx else "common")
         print(f"    {name:<12}: {int(train_counts[i]):>6}  [{tier}]")
 
-    # ── Stage-specific dataset config ─────────────────────────────────────────
+    # Stage-specific dataset config
     emotion_only_train = (stage == "stage2")
     augment_rare       = bool(train_cfg.get("augment_rare", False))
     aug_copies = {
@@ -500,7 +477,7 @@ def get_dataloaders(
         "common":    int(train_cfg.get("aug_copies_common",    0)),
     }
 
-    # ── Build datasets ────────────────────────────────────────────────────────
+    # Build datasets 
     train_ds = EkmanDataset(
         train_texts, train_labels, tokenizer, max_length,
         stage=stage, emotion_only=emotion_only_train,
@@ -516,7 +493,7 @@ def get_dataloaders(
         stage=stage, emotion_only=emotion_only_train,
     )
 
-    # ── Sampler (Stage 2 only) ────────────────────────────────────────────────
+    # Samp(Stage 2 only)
     sampler = None
     use_sampler = bool(train_cfg.get("use_weighted_sampler", stage == "stage2"))
     if use_sampler and stage == "stage2":
@@ -533,7 +510,7 @@ def get_dataloaders(
     val_loader   = _make_loader(val_ds,   batch_size, shuffle=False, num_workers=num_workers)
     test_loader  = _make_loader(test_ds,  batch_size, shuffle=False, num_workers=num_workers)
 
-    # ── pos_weight ────────────────────────────────────────────────────────────
+    #pos_weight 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     if stage == "stage1":

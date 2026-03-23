@@ -51,11 +51,7 @@ from src.utils import (
 )
 from models.loss import get_loss_fn
 
-
-# =============================================================================
 #  Model definitions
-# =============================================================================
-
 class EncoderForBinaryClassification(nn.Module):
     """Stage 1: single binary head. Output: (B, 1) logit."""
 
@@ -99,11 +95,7 @@ def build_model(stage_cfg: dict, stage: str, num_labels: int = None) -> nn.Modul
     n = num_labels if num_labels is not None else NUM_EMOTIONS
     return EncoderForMultiLabelClassification(pretrained, num_labels=n, dropout=dropout)
 
-
-# =============================================================================
 #  One-epoch helper
-# =============================================================================
-
 def _run_epoch(
     model, loader, criterion, optimizer, scheduler, scaler,
     device, stage, phase, epoch, total_epochs,
@@ -179,10 +171,7 @@ def _run_epoch(
     return loss_meter.avg, metrics
 
 
-# =============================================================================
 #  Main training function
-# =============================================================================
-
 def train(
     config_path: str = "config/config.yaml",
     stage:       str = "stage1",
@@ -213,7 +202,7 @@ def train(
     patience  = int(train_cfg.get("early_stopping_patience", 3))
     threshold = float(train_cfg.get("threshold", 0.5))
 
-    # ── Device & AMP ──────────────────────────────────────────────────────────
+    # Device & AMP 
     device        = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model_key     = stage_cfg["model"]["name"].lower()
     amp_dtype_str = BACKBONE_REGISTRY.get(model_key, {}).get("amp_dtype", "float16")
@@ -225,7 +214,7 @@ def train(
     else:
         use_amp, amp_dtype, use_scaler = False, torch.float32, False
 
-    # ── Run directory ─────────────────────────────────────────────────────────
+    # Run directory 
     if run_dir is None:
         run_dir, run_name = get_run_dir(cfg)
         print(f"\n{'='*62}")
@@ -240,45 +229,44 @@ def train(
 
     print(f"[train] Stage={stage}  Device={device}  AMP={use_amp} ({amp_dtype_str})")
 
-    # ── Data ──────────────────────────────────────────────────────────────────
+    #Data
     train_loader, val_loader, _, info = get_dataloaders(cfg, stage=stage)
     pos_weight   = info["pos_weight"]
     num_labels   = info["num_labels"]
     tier_indices = info["tier_indices"]
     pretrained   = info["pretrained"]
 
-    # ── Model ─────────────────────────────────────────────────────────────────
+    #Model 
     model      = build_model(stage_cfg, stage=stage, num_labels=num_labels).to(device)
     model_name = stage_cfg["model"]["name"]
     n_params   = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"[train] Model  : {model_name}  ({pretrained})")
     print(f"[train] Params : {n_params:,}  |  Labels: {num_labels}")
-
-    # ── Save config summary ───────────────────────────────────────────────────
+    
     save_config_summary(
         run_dir=run_dir, cfg=cfg, stage=stage, info=info,
         n_params=n_params,
         n_train=len(train_loader.dataset),
         n_val=len(val_loader.dataset),
-        n_test=0,   # test set not loaded during training
+        n_test=0,   
     )
 
-    # ── Loss ──────────────────────────────────────────────────────────────────
+    # Loss
     cfg_for_loss = {"training": dict(train_cfg)}
     criterion    = get_loss_fn(cfg_for_loss, device, pos_weight=pos_weight,
                                tier_indices=tier_indices)
 
-    # ── Optimizer & Scheduler ─────────────────────────────────────────────────
+    # Optimizer & Scheduler 
     optimizer   = get_optimizer(model, cfg_for_loss)
     total_steps = len(train_loader) * epochs
     scheduler   = get_scheduler(optimizer, cfg_for_loss, num_training_steps=total_steps)
     scaler      = GradScaler() if use_scaler else None
 
-    # ── Paths ─────────────────────────────────────────────────────────────────
+    # Paths
     ckpt_path = os.path.join(run_dir, "checkpoints", f"{stage}_best.pth")
     log_path  = os.path.join(run_dir, "logs",        f"training_log_{stage}.csv")
 
-    # ── CSV header ────────────────────────────────────────────────────────────
+    # CSV header
     if stage == "stage1":
         csv_fields = ["epoch", "train_loss", "val_loss",
                       "val_accuracy", "val_f1", "val_precision", "val_recall", "lr"]
@@ -289,7 +277,7 @@ def train(
     with open(log_path, "w", newline="") as f:
         csv.DictWriter(f, fieldnames=csv_fields).writeheader()
 
-    # ── Training loop ─────────────────────────────────────────────────────────
+    # Training loop
     best_val_loss = float("inf")
     best_metrics: Dict[str, float] = {}
     best_epoch    = 0
@@ -393,10 +381,7 @@ def train(
         "checkpoint_path":  ckpt_path,
     }
 
-
-# =============================================================================
 #  CLI
-# =============================================================================
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

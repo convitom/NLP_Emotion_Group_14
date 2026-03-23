@@ -1,6 +1,6 @@
 import pandas as pd
 
-# đọc file txt (tab separated)
+# read file txt (tab separated)
 df = pd.read_csv(
     r"D:\USTH\nlp\NLP_SemEval_36\data\data1_train.csv",
     sep=","
@@ -8,34 +8,23 @@ df = pd.read_csv(
 
 print(df.head())
 
-# cột text
 text_col = "text"
 
-# các cột emotion (bỏ ID + Tweet)
 emotion_cols = df.columns.drop(["label", "text"])
 
-# =========================
 # Count samples per emotion
-# =========================
-
 emotion_counts = df[emotion_cols].sum().sort_values(ascending=False)
 
 print("Emotion counts:")
 print(emotion_counts)
 
-# =========================
 # Number of emotions per sample
-# =========================
-
 df["num_emotions"] = df[emotion_cols].sum(axis=1)
 
 print("\nNumber of emotions per sample:")
 print(df["num_emotions"].value_counts().sort_index())
 
-# =========================
 # Correlation between emotions
-# =========================
-
 emotion_matrix = df[emotion_cols]
 
 corr = emotion_matrix.corr()
@@ -60,10 +49,8 @@ print("\nTop 20 emotion pairs by correlation:")
 for e1, e2, corr_val, count in pairs_sorted[:20]:
     print(f"{e1:15} {e2:15} corr={corr_val:.3f}  co-occur={count}")
 
-# =========================
-# Sentence length analysis
-# =========================
 
+# Sentence length analysis
 df["char_len"] = df[text_col].str.len()
 df["word_len"] = df[text_col].str.split().apply(len)
 
@@ -81,19 +68,14 @@ shortest = df.sort_values("word_len").head(10)
 print("\nShortest sentences:")
 print(shortest[["word_len", text_col]])
 
-# =========================
-# Emotion vs sentence length
-# =========================
 
+# Emotion vs sentence length
 emotion_matrix["length"] = df["word_len"]
 emotion_length = emotion_matrix.groupby("length").mean()
 
 print("\nAverage emotion presence by sentence length:")
 print(emotion_length.head(10))
 
-# =========================
-# Visualization
-# =========================
 
 import seaborn as sns
 import matplotlib.pyplot as plt

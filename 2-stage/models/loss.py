@@ -28,10 +28,7 @@ __all__ = ["BCELoss", "FocalBCELoss", "AsymmetricLoss", "TieredPerClassASL", "ge
 _EPS = 1e-8
 
 
-# =============================================================================
 #  1. BCE
-# =============================================================================
-
 class BCELoss(nn.Module):
     def __init__(self, pos_weight: Optional[torch.Tensor] = None, reduction: str = "mean"):
         super().__init__()
@@ -45,10 +42,7 @@ class BCELoss(nn.Module):
         return self.loss_fn(logits, targets)
 
 
-# =============================================================================
 #  2. Focal BCE
-# =============================================================================
-
 class FocalBCELoss(nn.Module):
     def __init__(
         self,
@@ -76,10 +70,7 @@ class FocalBCELoss(nn.Module):
                loss.sum()  if self.reduction == "sum"  else loss
 
 
-# =============================================================================
 #  3. Standard ASL
-# =============================================================================
-
 class AsymmetricLoss(nn.Module):
     """Asymmetric Loss — same gamma/clip for all classes."""
 
@@ -116,10 +107,7 @@ class AsymmetricLoss(nn.Module):
                loss.sum()  if self.reduction == "sum"  else loss
 
 
-# =============================================================================
 #  4. Three-Tier Per-Class ASL  (Stage 2 default)
-# =============================================================================
-
 class TieredPerClassASL(nn.Module):
     """
     Asymmetric Loss with three independent gamma/clip sets per imbalance tier:
@@ -213,10 +201,7 @@ class TieredPerClassASL(nn.Module):
                loss.sum()  if self.reduction == "sum"  else loss
 
 
-# =============================================================================
 #  5. Factory
-# =============================================================================
-
 def get_loss_fn(
     cfg:          dict,
     device:       torch.device,
@@ -235,7 +220,7 @@ def get_loss_fn(
     t    = cfg.get("training", {})
     name = t.get("loss", "bce_weighted").lower().strip()
 
-    # ── Clamp pos_weight here as a global safety net ──────────────────────────
+    # Clamp pos_weight here as a global safety net
     if pos_weight is not None:
         pos_weight = pos_weight.to(device).clamp(min=0.01, max=200.0)
 

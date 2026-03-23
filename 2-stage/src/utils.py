@@ -23,19 +23,12 @@ from transformers import get_cosine_schedule_with_warmup
 import yaml
 
 
-# =============================================================================
 #  Config
-# =============================================================================
-
 def load_config(path: str = "config/config.yaml") -> dict:
     with open(path, "r") as f:
         return yaml.safe_load(f)
 
-
-# =============================================================================
 #  Reproducibility
-# =============================================================================
-
 def set_seed(seed: int = 42) -> None:
     random.seed(seed)
     np.random.seed(seed)
@@ -45,9 +38,7 @@ def set_seed(seed: int = 42) -> None:
     torch.backends.cudnn.benchmark     = False
 
 
-# =============================================================================
 #  YOLO-style run directory
-# =============================================================================
 
 def get_run_dir(cfg: dict) -> Tuple[str, str]:
     """
@@ -77,7 +68,7 @@ def get_run_dir(cfg: dict) -> Tuple[str, str]:
     root = os.path.join(base, "run_2_stage")
     os.makedirs(root, exist_ok=True)
 
-    # Find next available slot (YOLO-style)
+    # Find next available slot 
     candidate = os.path.join(root, base_name)
     if not os.path.exists(candidate):
         run_dir  = candidate
@@ -144,11 +135,7 @@ def get_existing_run_dir(cfg: dict) -> str:
     _, latest = sorted(candidates)[-1]
     return latest
 
-
-# =============================================================================
 #  Optimizers & Schedulers
-# =============================================================================
-
 def get_optimizer(model: nn.Module, cfg: dict) -> optim.Optimizer:
     """
     Build optimizer with separate param groups:
@@ -201,11 +188,7 @@ def get_scheduler(optimizer, cfg: dict, num_training_steps: int):
         return None
     raise ValueError(f"Unknown scheduler: '{name}'")
 
-
-# =============================================================================
 #  AverageMeter
-# =============================================================================
-
 class AverageMeter:
     def __init__(self, name: str = ""):
         self.name = name
@@ -225,10 +208,7 @@ class AverageMeter:
         return self.sum / self.count if self.count else 0.0
 
 
-# =============================================================================
 #  Threshold helpers
-# =============================================================================
-
 def apply_threshold(probs: np.ndarray, threshold) -> np.ndarray:
     """
     (N, C) probs → (N, C) int32 predictions.
@@ -267,9 +247,7 @@ def find_best_thresholds(
     return best_thresholds
 
 
-# =============================================================================
 #  Config summary saver
-# =============================================================================
 
 def save_config_summary(
     run_dir:      str,
@@ -319,7 +297,7 @@ def save_config_summary(
     A(f"  Path: {run_dir}")
     A("=" * 60)
 
-    # ── Model ──────────────────────────────────────────────────────────────
+    # Model
     A("\n[Model]")
     A(f"  name        : {model_name}")
     A(f"  pretrained  : {pretrained}")
@@ -327,7 +305,7 @@ def save_config_summary(
     A(f"  params      : {n_params:,}")
     A(f"  num_labels  : {info.get('num_labels', '?')}")
 
-    # ── Data ───────────────────────────────────────────────────────────────
+    # Data 
     A("\n[Data]")
     A(f"  train_file  : {data_cfg.get('train_file', '?')}")
     A(f"  auto_split  : {data_cfg.get('auto_split', True)}")
@@ -339,7 +317,7 @@ def save_config_summary(
     A(f"  n_val       : {n_val}")
     A(f"  n_test      : {n_test}")
 
-    # ── Class counts & tiers (Stage 2) ─────────────────────────────────────
+    # Class counts & tiers (Stage 2)
     if stage == "stage2":
         A("\n[Class Counts & Tiers]")
         import numpy as np
@@ -359,7 +337,7 @@ def save_config_summary(
         A(f"  has_emotion : {label_counts.get('has_emotion', '?')}")
         A(f"  neutral     : {label_counts.get('neutral', '?')}")
 
-    # ── Augmentation ───────────────────────────────────────────────────────
+    # Augmentation 
     A("\n[Augmentation]")
     aug = bool(train_cfg.get("augment_rare", False))
     A(f"  augment_rare: {aug}")
@@ -368,7 +346,7 @@ def save_config_summary(
         A(f"  aug_copies_rare      : {train_cfg.get('aug_copies_rare',      2)}")
         A(f"  aug_copies_common    : {train_cfg.get('aug_copies_common',    0)}")
 
-    # ── Sampler ────────────────────────────────────────────────────────────
+    # Sampler 
     A("\n[Sampler]")
     use_s = bool(train_cfg.get("use_weighted_sampler", stage == "stage2"))
     A(f"  use_weighted_sampler: {use_s}")
@@ -378,7 +356,7 @@ def save_config_summary(
         A(f"  boost_rare          : {train_cfg.get('boost_rare',      3.0)}")
         A(f"  boost_common        : {train_cfg.get('boost_common',    1.0)}")
 
-    # ── pos_weight ─────────────────────────────────────────────────────────
+    # pos_weight 
     A("\n[pos_weight]")
     if stage == "stage1":
         A(f"  pw_scale            : {train_cfg.get('pw_scale', 1.0)}")
@@ -387,7 +365,7 @@ def save_config_summary(
         A(f"  pw_scale_rare       : {train_cfg.get('pw_scale_rare',      1.5)}")
         A(f"  pw_scale_common     : {train_cfg.get('pw_scale_common',    1.0)}")
 
-    # ── Loss ───────────────────────────────────────────────────────────────
+    # Loss 
     A("\n[Loss]")
     loss_name = train_cfg.get("loss", "bce_weighted")
     A(f"  loss                : {loss_name}")
@@ -410,7 +388,7 @@ def save_config_summary(
         A(f"  common     gamma_neg: {train_cfg.get('asl_gamma_neg_common',    2.0)}")
         A(f"  common     clip     : {train_cfg.get('asl_clip_common',         0.0)}")
 
-    # ── Training ───────────────────────────────────────────────────────────
+    # Training
     A("\n[Training]")
     A(f"  epochs              : {train_cfg.get('epochs', '?')}")
     A(f"  batch_size          : {train_cfg.get('batch_size', 32)}")
