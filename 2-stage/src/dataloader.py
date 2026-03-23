@@ -79,10 +79,7 @@ def preprocess_text(text: str) -> str:
     return text
 
 
-# =============================================================================
 #  Sentence splitting (mirrors inference.py)
-# =============================================================================
-
 try:
     import nltk
     for _pkg in ("punkt_tab", "punkt"):
@@ -653,11 +650,10 @@ def get_dataloaders(
     has_emotion_train = (train_labels_6.sum(axis=1) > 0).astype(np.float32)
 
     if stage == "stage1":
-        # ── Stage 1:───────────────────────
+        # Stage 1
         sample_mode = train_cfg.get("sample", "down")  
         ratio       = float(train_cfg.get("ratio", 1.0))
 
-        # map sang mode đầy đủ
         if sample_mode == "down":
             train_texts, train_labels_6, has_emotion_train = _resample_stage1(
                 train_texts,
@@ -694,7 +690,7 @@ def get_dataloaders(
         test_labels_out = (test_labels_6.sum(axis=1, keepdims=True) > 0).astype(np.float32)
 
     else:
-        # ── Stage 2: filter emotion-only, then median augmentation ────────────
+        # Stage 2: filter emotion-only, then median augmentation
         # Filter train to emotion-only first (before augmentation)
         emo_mask         = has_emotion_train.astype(bool)
         train_texts_emo  = [t for t, m in zip(train_texts, emo_mask) if m]
@@ -733,7 +729,7 @@ def get_dataloaders(
         val_labels_out  = val_ds.labels_6
         test_labels_out = test_ds.labels_6
 
-    # ── DataLoaders ───────────────────────────────────────────────────────────
+    #  DataLoaders 
     train_loader = _make_loader(train_ds, batch_size, shuffle=True,  num_workers=num_workers)
     val_loader   = _make_loader(val_ds,   batch_size, shuffle=False, num_workers=num_workers)
     test_loader  = _make_loader(test_ds,  batch_size, shuffle=False, num_workers=num_workers)
