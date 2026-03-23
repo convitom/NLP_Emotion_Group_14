@@ -1,9 +1,6 @@
 import pandas as pd
 import ast
 
-# ======================================================
-# Ekman emotions
-# ======================================================
 OUTPUT = r"NLP_SemEval_36\data\data1_test.csv"
 semeval = pd.read_csv(
     r"NLP_SemEval_36\data\2018-E-c-En-test-gold.txt",
@@ -13,10 +10,6 @@ go = pd.read_csv(r"NLP_SemEval_36\data\test.csv")
 
 EKMAN = ["anger", "disgust", "fear", "joy", "sadness", "surprise"]
 
-# ======================================================
-# SemEval -> Ekman mapping
-# (anticipation, trust removed)
-# ======================================================
 semeval_map = {
     "anger": "anger",
     "disgust": "disgust",
@@ -29,9 +22,6 @@ semeval_map = {
     "pessimism": "sadness"
 }
 
-# ======================================================
-# GoEmotions -> Ekman mapping
-# ======================================================
 goemotion_map = {
 
     "admiration": "joy",
@@ -63,9 +53,6 @@ goemotion_map = {
     "surprise": "surprise"
 }
 
-# ======================================================
-# Load SemEval
-# ======================================================
 print("Loading SemEval...")
 
 
@@ -102,10 +89,6 @@ for _, row in semeval.iterrows():
 semeval_df = pd.DataFrame(rows)
 
 print("SemEval samples:", len(semeval_df))
-
-# ======================================================
-# Load GoEmotions
-# ======================================================
 print("Loading GoEmotions...")
 
 
@@ -145,19 +128,11 @@ for _, row in go.iterrows():
 go_df = pd.DataFrame(rows)
 
 print("GoEmotions samples:", len(go_df))
-
-# ======================================================
-# Merge datasets
-# ======================================================
 print("Merging datasets...")
 
 merged = pd.concat([semeval_df, go_df], ignore_index=True)
 
 print("Total samples:", len(merged))
-
-# ======================================================
-# Save dataset
-# ======================================================
 merged.to_csv(
     OUTPUT,
     index=False
