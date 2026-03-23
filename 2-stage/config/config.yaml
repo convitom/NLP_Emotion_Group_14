@@ -1,167 +1,82 @@
-#==============================================================================
-#  config.yaml  —  Two-Stage Ekman 6-Emotion + Neutral Classification
-#
-#  Output structure (YOLO-style auto-increment):
-#    <run_base_dir>/run_2_stage/
-#      electra+deberta/          ← stage1_model+stage2_model
-#        checkpoints/            ← stage1_best.pth, stage2_best.pth
-#        results/stage1/         ← report, charts, CSV
-#        results/stage2/
-#        results/end2end/
-#        logs/                   ← training_log_stage1.csv, stage2.csv
-#      electra+deberta_2/        ← second run, same pair (no overwrite)
-#      electra+deberta_3/
-#==============================================================================
+run_base_dir: "/content/drive/MyDrive"
+# run_base_dir: "."
 
-#------------------------------------------------------------------------------
-#  Output root
-#  Google Colab → saves to Drive so results survive session restart
-#  Change to "." for local training
-#------------------------------------------------------------------------------
-run_base_dir: "/content/drive/MyDrive"    # Colab default
-# run_base_dir: "."                       # local
 
-#------------------------------------------------------------------------------
 #  Data
-#------------------------------------------------------------------------------
+
 data:
   data_dir:   "data/"
-  train_file: "data1_train.csv"    # columns: text | anger | disgust | fear | joy | sadness | surprise
-  val_file:   "data1_val.csv"      # ignored when auto_split: true
-  test_file:  "data1_test.csv"     # ignored when auto_split: true
+  train_file: "data1_train.csv"   # columns: text | anger | disgust | fear | joy | sadness | surprise
+  val_file:   "data1_val.csv"
+  test_file:  "data1_test.csv"
 
-  auto_split:  false      # split train_file → train / val / test
+  auto_split:  false    # if true, splits train_file into train / val / test automatically
   val_ratio:   0.10
   test_ratio:  0.10
 
-  max_length:  128
+  max_length:  128      # maximum tokenised sequence length (tokens)
   seed:        42
-  num_workers: 2     # số worker cho DataLoader — Colab: 2, local GPU mạnh: 4, debug: 0
+  num_workers: 2        
 
-#------------------------------------------------------------------------------
 #  Stage 1 — Binary: Neutral vs Has-Emotion
-#
-#  Imbalance: has_emotion 35,751 vs neutral 14,497  (ratio ≈ 2.5:1, mild)
-#  Strategy : BCE + pos_weight only — no sampler needed at this ratio
-#
-#  Model options (set name below):
-#    electra  → google/electra-base-discriminator   ← recommended
-#    bert     → google-bert/bert-base-uncased
-#    roberta  → FacebookAI/roberta-base
-#    deberta  → microsoft/deberta-v3-base
-#------------------------------------------------------------------------------
-stage1:
-  model:
-    name:    "electra"    # ← recommended: pre-trained as binary discriminator
-    dropout: 0.1
 
+stage1:
+  # Model
+  model:
+    name:    "electra" #  electra | bert | roberta
+    dropout: 0.1
+  # Training
   training:
     epochs:                  10
     batch_size:              32
-    lr:                      3.0e-5    # higher LR OK — simpler task
+    lr:                      3.0e-5    
     weight_decay:            0.01
     optimizer:               "adamw"
     scheduler:               "cosine_warmup"
     warmup_ratio:            0.10
-    early_stopping_patience: 3
+    early_stopping_patience: 5        
     threshold:               0.5
 
-    loss:                "bce_weighted"   # BCE + pos_weight handles mild imbalance
-    use_weighted_sampler: false           # not needed at 2.5:1 ratio
-    pw_scale:             1.0            # pos_weight = (n_neg/n_pos)^pw_scale
+    # Inference 
+    inference_window: 1
 
-    # Option A — downsample emotion
-    downsample_majority: true 
-    downsample_ratio:    1.0      # 1:1 balanced
+    # Loss
+    loss:     "bce_weighted"
 
-    # Option B — oversample neutral
-    oversample_minority: false
-    oversample_ratio:    1.0      # duplicate neutral lên ngang emotion
+    # Sampling
+    sample: "down"  # down / over
+    ratio:    1.0     
 
-    # Option C — WeightedSampler (có thể kết hợp với B)
-    use_weighted_sampler: false
-#------------------------------------------------------------------------------
+
 #  Stage 2 — Multi-Label: 6 Ekman Emotions
-#  Trained on emotion-only samples (neutral filtered out)
-#
-#  Class counts:
-#    joy      19,794  ┐
-#    anger     7,813  │  common (≥ median 6,615)
-#    surprise  5,418  ┘
-#    sadness   5,392  ┐
-#    disgust   3,366  ┘  rare   (< median, ≥ median/3)
-#    fear      1,941     very_rare (< median/3)
-#
-#  joy/fear ratio ≈ 10× → requires 3-tier strategy
-#
-#  Three-tier imbalance strategy:
-#    very_rare (fear)   : aug ×4, sampler boost ×5, high pw_scale, lowest gamma_neg
-#    rare (disgust)     : aug ×2, sampler boost ×3, mid pw_scale, low gamma_neg
-#    common (rest)      : no aug, no extra boost, standard gamma_neg
-#
-#  Model options:
-#    deberta  → microsoft/deberta-v3-base          ← recommended
-#    roberta  → FacebookAI/roberta-base
-#    electra  → google/electra-base-discriminator
-#    bert     → google-bert/bert-base-uncased
-#------------------------------------------------------------------------------
-stage2:
-  model:
-    name:    "bert"    # ← recommended: disentangled attention for subtle emotion differences
-    dropout: 0.2
 
+stage2:
+  # Model
+  model:
+    name:    "bert" # bert | roberta | electra
+    dropout: 0.2
+  # Training
   training:
     epochs:                  20
-    batch_size:              32      # reduce to 16 if OOM with deberta on <16GB GPU
+    batch_size:              32
     lr:                      2.0e-5
     weight_decay:            0.01
     optimizer:               "adamw"
     scheduler:               "cosine_warmup"
     warmup_ratio:            0.10
-    early_stopping_patience: 5
+    early_stopping_patience: 5        
     threshold:               0.5
 
-    loss: "per_class_asl"    # tier-aware ASL — different gamma per frequency tier
+    # Inference
+    inference_window: 1
 
-    # ── Tier thresholds (auto-computed from train data, these are the divisors) ──
-    # very_rare: count < median / very_rare_divisor
-    # rare:      count < median / rare_divisor
-    very_rare_divisor: 3.0
-    rare_divisor:      1.0   # i.e. < median
+    # Loss 
+    loss: "asymmetric" # bce | bce_weighted | asymmetric 
 
-    # ── Synonym augmentation ────────────────────────────────────────────────────
-    augment_rare:         true
-    aug_copies_very_rare: 2    
-    aug_copies_rare:      1   
-    aug_copies_common:    0    # joy, anger, ... → no extra copies
+    # ASL parameters:
+    asl_gamma_pos: 0.0
+    asl_gamma_neg: 2.0
+    asl_clip:      0.05
 
-    # ── Weighted sampler ─────────────────────────────────────────────────────────
-    use_weighted_sampler: true
-    sampler_power:        0.7
-    boost_very_rare:      2.0
-    boost_rare:           1.5
-    boost_common:         1.0
-
-    # ── pos_weight scale per tier ──────────────────────────────────────────────
-    # pos_weight[c] = ((N-n_pos[c])/n_pos[c]) ^ pw_scale[tier]
-    pw_scale_very_rare: 2.0   # strong pos_weight for fear
-    pw_scale_rare:      1.5   # moderate for disgust
-    pw_scale_common:    1.0   # standard for others
-
-    # ── Per-Class ASL gammas per tier ──────────────────────────────────────────
-    # very_rare (fear): plain BCE on positives + very gentle negative suppression
-    #   → model stays maximally sensitive to fear signals
-    asl_gamma_pos_very_rare: 0.0
-    asl_gamma_neg_very_rare: 0.5
-    asl_clip_very_rare:      0.0
-
-    # rare (disgust): gentle asymmetric focusing
-    asl_gamma_pos_rare:      0.5
-    asl_gamma_neg_rare:      1.0
-    asl_clip_rare:           0.0
-
-    # common (anger, surprise, sadness, joy): standard ASL
-    #   → down-weight easy negatives aggressively
-    asl_gamma_pos_common:    1.0
-    asl_gamma_neg_common:    2.0
-    asl_clip_common:         0.0
+    # Augmentation 
+    augment: true

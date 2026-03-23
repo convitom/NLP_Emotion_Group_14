@@ -1,42 +1,30 @@
-#==============================================================================
-#  config.yaml  —  Single-Stage End-to-End Ekman Classification
-#
-#  Task  : 7-class multi-label (6 emotions + neutral), ALL samples
-#
-#  Output structure (YOLO-style auto-increment):
-#    <run_base_dir>/run_e2e/
-#      deberta/                <- <model_name>
-#        checkpoints/best.pth
-#        logs/training_log.csv
-#        logs/config.txt
-#        results/              <- charts, reports, CSVs
-#      deberta_2/              <- second run, no overwrite
-#
-#  CLI:
-#    python src/train.py --config config/config.yaml
-#    python src/test.py  --config config/config.yaml
-#==============================================================================
 
 run_base_dir: "/content/drive/MyDrive"
 # run_base_dir: "."
 
+
+#  Data
+
 data:
   data_dir:   "data/"
-  train_file: "data1_train.csv"
+  train_file: "data1_train.csv"   
   val_file:   "data1_val.csv"
   test_file:  "data1_test.csv"
 
-  auto_split:  false
+  auto_split:  false    # if true, splits train_file into train / val / test automatically
   val_ratio:   0.10
   test_ratio:  0.10
 
-  max_length:  128
+  max_length:  128      # maximum tokenised sequence length (tokens)
   seed:        42
-  num_workers: 2
+  num_workers: 2       
+
+
+#  E2E model and training
 
 e2e:
   model:
-    name:    "bert"
+    name:    "bert" # bert / electra / roberta
     dropout: 0.2
 
   training:
@@ -47,68 +35,25 @@ e2e:
     optimizer:               "adamw"
     scheduler:               "cosine_warmup"
     warmup_ratio:            0.10
-    early_stopping_patience: 5
-    threshold:               0.5
+    early_stopping_patience: 5        
+    threshold:               0.5      
 
-    # ── Training mode ──────────────────────────────────────────────────────
-    # Chọn một trong 4 chế độ:
-    #
-    #   "finetune"      (default) Fine-tune toàn bộ backbone + head.
-    #                   Backbone lr = lr, head lr = lr * 3.
-    #
-    #   "freeze_backbone" Freeze toàn bộ backbone (không update trọng số),
-    #                   chỉ train classification head.
-    #                   Nhanh hơn, ít overfit, hữu ích khi data ít hoặc
-    #                   muốn kiểm tra sức mạnh của feature extraction sẵn có.
-    #
-    #   "from_scratch"  Khởi tạo backbone với trọng số ngẫu nhiên
-    #                   (KHÔNG load pretrained). Train toàn bộ từ đầu.
-    #                   Cần nhiều data và epoch hơn. lr nên tăng lên ~1e-4.
-    #
-    #   "llrd"          Layerwise Learning Rate Decay — fine-tune toàn bộ
-    #                   nhưng các layer thấp (embedding, early transformer)
-    #                   nhận lr nhỏ hơn nhiều so với các layer cao và head.
-    #                   Hiệu quả khi data vừa (<50k), tránh catastrophic
-    #                   forgetting ở layer đầu, không cần freeze cứng.
-    #                   lr đặt cho TOP layer; các layer sâu hơn nhân thêm
-    #                   llrd_decay_rate mỗi bước (VD: 0.8^n).
-    #
-    training_mode: "finetune"
+    # Training mode 
+    
+    training_mode: "finetune"  # finetune / from_scratch / freeze_backbone / llrd
 
-    # ── LLRD-specific (chỉ dùng khi training_mode = "llrd") ───────────────
-    # llrd_decay_rate: Hệ số nhân lr cho mỗi layer xuống sâu hơn.
-    #   VD: 0.8 → layer top=lr, layer top-1=lr*0.8, layer top-2=lr*0.64...
-    #   Khuyến nghị: 0.75 - 0.90 (nhỏ hơn = chênh lệch lớn hơn).
     llrd_decay_rate: 0.8
 
-    loss: "per_class_asl"
+    # Inference 
+    
+    inference_window: 1 
 
-    very_rare_divisor: 2.0
-    rare_divisor:      1.0
+    # Loss function 
+    
+    loss: "asymmetric" # bce | bce_weighted | asymmetric 
+    asl_gamma_pos: 0.0
+    asl_gamma_neg: 2.0
+    asl_clip:      0.05
 
-    augment_rare:         true
-    aug_copies_very_rare: 2
-    aug_copies_rare:      1
-    aug_copies_common:    0
-
-    use_weighted_sampler: true
-    sampler_power:        0.7
-    boost_very_rare:      2.0
-    boost_rare:           1.5
-    boost_common:         1.0
-
-    pw_scale_very_rare: 2.0
-    pw_scale_rare:      1.5
-    pw_scale_common:    1.0
-
-    asl_gamma_pos_very_rare: 0.0
-    asl_gamma_neg_very_rare: 0.5
-    asl_clip_very_rare:      0.0
-
-    asl_gamma_pos_rare:      0.5
-    asl_gamma_neg_rare:      1.0
-    asl_clip_rare:           0.0
-
-    asl_gamma_pos_common:    1.0
-    asl_gamma_neg_common:    2.0
-    asl_clip_common:         0.0
+    # Augmentation
+    augment: true

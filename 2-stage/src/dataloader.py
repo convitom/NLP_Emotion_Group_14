@@ -6,133 +6,285 @@ Data format (CSV):
     text | anger | disgust | fear | joy | sadness | surprise
 
 Stage modes:
-    stage="stage1"  → binary label [has_emotion]  — all samples
-    stage="stage2"  → 6-hot label  [emotions]     — emotion-only samples
+    stage="stage1"  → binary label [has_emotion] — all samples
+    stage="stage2"  → 6-hot label  [emotions]    — emotion-only samples
 
-Three-tier imbalance strategy for Stage 2
-──────────────────────────────────────────
-Class counts in data1_train.csv:
-  joy      19,794   ┐
-  anger     7,813   │ common  (count ≥ median)
-  surprise  5,418   │
-  sadness   5,392   ┘
-  disgust   3,366     rare    (median/3 ≤ count < median)
-  fear      1,941     very_rare (count < median/3)
+Imbalance handling:
+    Stage 1 (2.5:1 emotion vs neutral):
+        Majority (emotion) downsampling to a 1:1 ratio before training.
+        Inverse-frequency pos_weight in BCEWithLogitsLoss.
 
-  joy/fear ratio ≈ 10×  →  three separate treatment tiers:
+    Stage 2 (6-class, up to 10× imbalance):
+        1. Median-based synonym augmentation via nlpaug:
+           classes below the median count are oversampled with synonym-replaced
+           copies until they reach the median.
+        2. Inverse-frequency pos_weight: w_c = n_neg_c / n_pos_c
+           computed on the post-augmentation training distribution.
+        3. Standard ASL (same γ⁺/γ⁻ for all classes): suppresses easy-negative
+           dominance — orthogonal to class-frequency imbalance.
 
-  Layer 1 – Augmentation:
-      very_rare: aug_copies_very_rare (default 4) synonym-replaced copies
-      rare:      aug_copies_rare      (default 2)
-      common:    aug_copies_common    (default 0)
-
-  Layer 2 – WeightedRandomSampler:
-      inv_freq^sampler_power  +  per-tier boost multiplier
-      very_rare: boost_very_rare (default 5×)
-      rare:      boost_rare      (default 3×)
-
-  Layer 3 – pos_weight:
-      per-tier pw_scale multiplier applied to ((N-n_pos)/n_pos)
-      very_rare: pw_scale_very_rare (default 3.0)  ← multiply, NOT exponent
-      rare:      pw_scale_rare      (default 1.5)
-      common:    pw_scale_common    (default 1.0)
-
-num_workers:
-    Set via config['data']['num_workers'] (default 4).
-    Pass 0 to disable multiprocessing (useful for debugging or Windows).
-
-Imbalance strategy for Stage 1 (binary: has_emotion vs neutral)
-────────────────────────────────────────────────────────────────
-Three mutually-exclusive options, controlled by config stage1.training:
-
-  Option A — downsample majority (default off):
-      downsample_majority: true
-      downsample_ratio:    1.0   # 1.0=1:1, 2.0=2:1, ...
-
-  Option B — oversample minority (default off):
-      oversample_minority: true
-      oversample_ratio:    1.0   # 1.0=1:1, 2.0=2:1, ...
-   
-  Option C — WeightedRandomSampler (default off):
-      use_weighted_sampler: true
-    
+Inference:
+    Sentence-level splitting + context window (mirrors inference.py).
+    See sentence_predict() below.
 """
 
 from __future__ import annotations
 
 import os
-import random
 import re
 from typing import Dict, List, Optional, Tuple
 
+import nlpaug.augmenter.word as naw
 import numpy as np
 import pandas as pd
 import torch
 from sklearn.model_selection import train_test_split
-from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
-from transformers import AutoTokenizer
-
+from torch.utils.data import DataLoader, Dataset
+from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
 #  Backbone registry
+
 BACKBONE_REGISTRY: Dict[str, Dict[str, str]] = {
     "bert":    {"pretrained": "google-bert/bert-base-uncased",     "amp_dtype": "float16"},
     "roberta": {"pretrained": "FacebookAI/roberta-base",           "amp_dtype": "float16"},
-    "deberta": {"pretrained": "microsoft/deberta-v3-base",         "amp_dtype": "bfloat16"},
     "electra": {"pretrained": "google/electra-base-discriminator", "amp_dtype": "float16"},
 }
 
 #  Label metadata
+
 EMOTION_NAMES:   List[str] = ["anger", "disgust", "fear", "joy", "sadness", "surprise"]
 NUM_EMOTIONS:    int        = len(EMOTION_NAMES)   # 6
 ALL_CLASS_NAMES: List[str] = EMOTION_NAMES + ["neutral"]
 NUM_ALL_CLASSES: int        = 7
 
+#  Text preprocessing
 
-#  Synonym augmentation
-
-_SYNONYM_MAP: Dict[str, List[str]] = {
-    "happy":     ["glad", "pleased", "delighted", "joyful"],
-    "good":      ["great", "wonderful", "fantastic", "excellent"],
-    "bad":       ["terrible", "awful", "horrible", "dreadful"],
-    "sad":       ["unhappy", "miserable", "sorrowful", "depressed"],
-    "angry":     ["furious", "enraged", "mad", "irritated"],
-    "scared":    ["afraid", "frightened", "terrified", "anxious"],
-    "love":      ["adore", "cherish", "treasure", "care about"],
-    "hate":      ["despise", "loathe", "detest", "dislike"],
-    "think":     ["believe", "feel", "consider", "reckon"],
-    "amazing":   ["incredible", "awesome", "remarkable", "stunning"],
-    "hard":      ["difficult", "tough", "challenging", "demanding"],
-    "hope":      ["wish", "expect", "trust", "anticipate"],
-    "worry":     ["fear", "dread", "fret", "stress"],
-    "thankful":  ["grateful", "appreciative", "blessed"],
-    "proud":     ["honored", "pleased", "satisfied", "glad"],
-    "awful":     ["terrible", "dreadful", "horrible", "atrocious"],
-    "excited":   ["thrilled", "enthusiastic", "eager", "pumped"],
-    "surprised": ["shocked", "astonished", "stunned", "amazed"],
-    "fearful":   ["terrified", "petrified", "alarmed", "horrified"],
-    "disgusted": ["revolted", "repulsed", "sickened", "appalled"],
-    "furious":   ["enraged", "livid", "irate", "outraged"],
-    "depressed": ["despondent", "devastated", "heartbroken", "gloomy"],
-    "joyful":    ["ecstatic", "elated", "overjoyed", "blissful"],
-    "nervous":   ["anxious", "apprehensive", "uneasy", "tense"],
-    "shocked":   ["stunned", "astounded", "flabbergasted", "aghast"],
-}
+_RE_URL     = re.compile(r"https?://\S+|www\.\S+")
+_RE_MENTION = re.compile(r"@\w+")
+_RE_SPACES  = re.compile(r"\s+")
 
 
-def _synonym_replace(text: str, n: int = 2, seed: int = None) -> str:
-    rng   = random.Random(seed)
-    words = text.split()
-    idxs  = list(range(len(words)))
-    rng.shuffle(idxs)
-    replaced = 0
-    for i in idxs:
-        w = re.sub(r"[^a-zA-Z]", "", words[i]).lower()
-        if w in _SYNONYM_MAP and replaced < n:
-            words[i] = rng.choice(_SYNONYM_MAP[w])
-            replaced += 1
-    return " ".join(words)
+def preprocess_text(text: str) -> str:
+    """
+    Clean raw social-media text before tokenisation.
 
-#  Stage 1 resampling helpers  [MOI THEM]
+    Steps (order matters):
+      1. Replace URLs     → '<url>'
+      2. Replace mentions → '<mention>'
+      3. Collapse extra whitespace → single space
+    """
+    text = _RE_URL.sub("<url>", text)
+    text = _RE_MENTION.sub("<mention>", text)
+    text = _RE_SPACES.sub(" ", text).strip()
+    return text
+
+
+# =============================================================================
+#  Sentence splitting (mirrors inference.py)
+# =============================================================================
+
+try:
+    import nltk
+    for _pkg in ("punkt_tab", "punkt"):
+        try:
+            nltk.data.find(f"tokenizers/{_pkg}")
+        except LookupError:
+            nltk.download(_pkg, quiet=True)
+    from nltk.tokenize import sent_tokenize as _nltk_split
+    _USE_NLTK = True
+except ImportError:
+    _USE_NLTK = False
+
+_SENT_RE  = re.compile(r'(?<=[.!?…])\s+', re.UNICODE)
+_COMMA_RE = re.compile(r'(?<=,|;)\s+')
+
+
+def _chunk_long_sentence(
+    sent:       str,
+    tokenizer:  PreTrainedTokenizerBase,
+    max_tokens: int,
+) -> List[str]:
+    """
+    Split a sentence that exceeds max_tokens at comma/semicolon boundaries.
+    Falls back to hard truncation if no split points exist.
+    """
+    ids = tokenizer.encode(sent, add_special_tokens=True)
+    if len(ids) <= max_tokens:
+        return [sent]
+
+    parts = _COMMA_RE.split(sent)
+    if len(parts) == 1:
+        safe_ids = ids[:max_tokens - 1]
+        return [tokenizer.decode(safe_ids, skip_special_tokens=True)]
+
+    chunks: List[str] = []
+    current = ""
+    for part in parts:
+        candidate = (current + ", " + part).strip(", ") if current else part
+        if len(tokenizer.encode(candidate, add_special_tokens=True)) <= max_tokens:
+            current = candidate
+        else:
+            if current:
+                chunks.append(current)
+            current = part
+    if current:
+        chunks.append(current)
+    return chunks or [sent]
+
+
+def split_sentences(
+    text:       str,
+    tokenizer:  Optional[PreTrainedTokenizerBase] = None,
+    max_tokens: int = 128,
+) -> List[str]:
+    """
+    Split a document into sentences, each fitting within max_tokens tokens.
+
+    Step 1 — Sentence splitting via NLTK (or regex fallback).
+    Step 2 — Long sentences are further split at comma/semicolon boundaries.
+
+    Args:
+        text:       Input text (pre-cleaned).
+        tokenizer:  Backbone tokenizer for exact token counting.
+                    If None, word count × 1.3 is used as an estimate.
+        max_tokens: Maximum tokens per chunk (should equal config max_length).
+
+    Returns:
+        List of sentence strings, each guaranteed to fit within max_tokens.
+    """
+    text = text.strip()
+    if not text:
+        return []
+
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    raw_sentences: List[str] = []
+    for line in lines:
+        parts = _nltk_split(line, language="english") if _USE_NLTK \
+                else _SENT_RE.split(line)
+        for p in parts:
+            p = p.strip()
+            if not p:
+                continue
+            if raw_sentences and len(raw_sentences[-1]) < 4:
+                raw_sentences[-1] += " " + p
+            else:
+                raw_sentences.append(p)
+
+    if not raw_sentences:
+        return [text]
+
+    result: List[str] = []
+    for sent in raw_sentences:
+        if tokenizer is not None:
+            result.extend(_chunk_long_sentence(sent, tokenizer, max_tokens))
+        else:
+            est_tokens = len(sent.split()) * 1.3
+            if est_tokens <= max_tokens:
+                result.append(sent)
+            else:
+                parts = _COMMA_RE.split(sent)
+                chunk, chunk_words = "", 0
+                max_words = int(max_tokens / 1.3)
+                for part in parts:
+                    w = len(part.split())
+                    if chunk_words + w <= max_words:
+                        chunk = (chunk + ", " + part).strip(", ") if chunk else part
+                        chunk_words += w
+                    else:
+                        if chunk:
+                            result.append(chunk)
+                        chunk, chunk_words = part, w
+                if chunk:
+                    result.append(chunk)
+    return result or [text]
+
+
+#  Sentence-level inference helper
+
+def sentence_predict(
+    model:      torch.nn.Module,
+    texts:      List[str],
+    labels:     np.ndarray,
+    tokenizer:  PreTrainedTokenizerBase,
+    max_length: int,
+    batch_size: int,
+    device:     torch.device,
+    window:     int = 0,
+    stage:      str = "stage2",
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Run inference using sentence-level splitting with optional context window.
+
+    For each document:
+      1. Split into sentences (each fits within max_length tokens).
+      2. For each sentence at index i, build the context string from
+         up to `window` neighbouring sentences on each side.
+      3. Run a forward pass per context string.
+      4. Aggregate per-class probabilities across all sentences by
+         element-wise maximum — a class is active in the document if
+         any sentence triggers it above the threshold.
+
+    Args:
+        model:      Trained model in eval mode.
+        texts:      List of preprocessed text strings.
+        labels:     Ground-truth label matrix (returned unchanged).
+        tokenizer:  Backbone tokenizer.
+        max_length: Maximum sequence length used during training.
+        batch_size: Forward-pass batch size.
+        device:     Compute device.
+        window:     Number of context sentences on each side (default 0).
+        stage:      "stage1" (binary) or "stage2" (6-class).
+
+    Returns:
+        (probs, labels) where probs is (N, C) float32.
+    """
+    n_classes = 1 if stage == "stage1" else NUM_EMOTIONS
+    model.eval()
+    all_probs: List[np.ndarray] = []
+
+    with torch.no_grad():
+        for text in texts:
+            sentences = split_sentences(text, tokenizer=tokenizer,
+                                        max_tokens=max_length)
+            if not sentences:
+                all_probs.append(np.zeros(n_classes, dtype=np.float32))
+                continue
+
+            ctx_strings: List[str] = []
+            for idx in range(len(sentences)):
+                if window == 0:
+                    ctx = sentences[idx]
+                else:
+                    left  = sentences[max(0, idx - window): idx]
+                    right = sentences[idx + 1: idx + 1 + window]
+                    ctx   = " ".join(left + [sentences[idx]] + right)
+                ctx_strings.append(ctx)
+
+            doc_probs: List[np.ndarray] = []
+            for b_start in range(0, len(ctx_strings), batch_size):
+                batch_ctx = ctx_strings[b_start: b_start + batch_size]
+                enc = tokenizer(
+                    batch_ctx,
+                    max_length=max_length,
+                    padding="max_length",
+                    truncation=True,
+                    return_tensors="pt",
+                )
+                logits = model(
+                    enc["input_ids"].to(device),
+                    enc["attention_mask"].to(device),
+                )
+                probs = torch.sigmoid(logits).float().cpu().numpy()  # (B, C)
+                doc_probs.extend(probs)
+
+            # Aggregate: element-wise max across all sentence predictions
+            doc_prob_max = np.max(doc_probs, axis=0)  # (C,)
+            all_probs.append(doc_prob_max)
+
+    return np.vstack(all_probs).astype(np.float32), labels
+
+
+#  Stage 1 resampling
 
 def _resample_stage1(
     texts:       List[str],
@@ -143,28 +295,27 @@ def _resample_stage1(
     seed:        int = 42,
 ) -> Tuple[List[str], np.ndarray, np.ndarray]:
     """
-    Resample stage1 data de can bang has_emotion vs neutral.
-    Dataset-agnostic: tu phat hien class nao la da so / thieu so.
+    Resample Stage 1 training data to balance has_emotion vs neutral.
 
     Args:
-        mode : "downsample" bo bot samples cua class da so.
-               "oversample" duplicate minority den khi dat ratio.
-        ratio: ti le da so / thieu so sau resampling.
-               1.0 -> 1:1 balanced | 2.0 -> 2:1 | 0.0 -> tat
+        mode : "downsample" — remove majority samples to reach the target ratio.
+               "oversample" — duplicate minority samples to reach the target ratio.
+        ratio: target majority / minority ratio.
+               1.0 → 1:1 balanced | 2.0 → 2:1 | 0.0 → disabled.
 
     Returns:
-        (texts, labels_6, has_emotion) sau resampling.
+        (texts, labels_6, has_emotion) after resampling.
     """
     if ratio <= 0.0:
         return texts, labels_6, has_emotion
 
-    texts       = list(texts)
-    n_emotion   = int(has_emotion.sum())
-    n_neutral   = int(len(has_emotion) - n_emotion)
-    rng         = np.random.default_rng(seed)
+    texts     = list(texts)
+    rng       = np.random.default_rng(seed)
 
     emotion_idx = np.where(has_emotion > 0)[0]
     neutral_idx = np.where(has_emotion == 0)[0]
+    n_emotion   = len(emotion_idx)
+    n_neutral   = len(neutral_idx)
 
     if n_emotion >= n_neutral:
         majority_idx, minority_idx = emotion_idx, neutral_idx
@@ -180,7 +331,7 @@ def _resample_stage1(
         keep_n       = min(int(n_min * ratio), n_maj)
         kept_maj_idx = rng.choice(majority_idx, size=keep_n, replace=False)
         final_idx    = np.sort(np.concatenate([kept_maj_idx, minority_idx]))
-        texts_out    = [texts[i]  for i in final_idx]
+        texts_out    = [texts[i] for i in final_idx]
         labels_out   = labels_6[final_idx]
         has_em_out   = has_emotion[final_idx]
 
@@ -190,56 +341,95 @@ def _resample_stage1(
         if extra_needed == 0:
             return texts, labels_6, has_emotion
         dup_idx      = rng.choice(minority_idx, size=extra_needed, replace=True)
-        extra_texts  = [texts[i]  for i in dup_idx]
-        extra_labels = labels_6[dup_idx]
-        extra_has_em = has_emotion[dup_idx]
-        texts_out    = texts + extra_texts
-        labels_out   = np.vstack([labels_6,    extra_labels])
-        has_em_out   = np.concatenate([has_emotion, extra_has_em])
+        texts_out    = texts + [texts[i] for i in dup_idx]
+        labels_out   = np.vstack([labels_6,    labels_6[dup_idx]])
+        has_em_out   = np.concatenate([has_emotion, has_emotion[dup_idx]])
 
     else:
         raise ValueError(f"mode must be 'downsample' or 'oversample', got '{mode}'")
 
-    n_new_emotion = int(has_em_out.sum())
-    n_new_neutral = len(has_em_out) - n_new_emotion
+    n_new_em  = int(has_em_out.sum())
+    n_new_neu = len(has_em_out) - n_new_em
     print(f"[DataLoader] stage1 {mode} (ratio={ratio}, majority={majority_label}): "
-          f"{len(has_emotion)} -> {len(has_em_out)} samples  "
-          f"(emotion={n_new_emotion}, neutral={n_new_neutral})")
+          f"{len(has_emotion)} → {len(has_em_out)} samples "
+          f"(emotion={n_new_em}, neutral={n_new_neu})")
     return texts_out, labels_out, has_em_out
 
 
-#  Tier classification
+#  Median-based synonym augmentation for Stage 2 (nlpaug)
 
-def compute_tiers(
-    label_counts:  np.ndarray,
-    very_rare_div: float = 3.0,
-    rare_div:      float = 1.0,
-) -> Tuple[List[int], List[int], List[int]]:
+def _build_augmenter() -> naw.SynonymAug:
+    """Build a WordNet synonym augmenter (called once per training run)."""
+    return naw.SynonymAug(aug_src="wordnet", aug_p=0.15)
+
+
+def augment_to_median_stage2(
+    texts:    List[str],
+    labels_6: np.ndarray,
+    aug,
+    seed:     int = 42,
+) -> Tuple[List[str], np.ndarray]:
     """
-    Classify class indices into three tiers based on count vs median.
+    Oversample Stage 2 emotion classes below the median count using
+    synonym augmentation (nlpaug SynonymAug, WordNet backend).
+
+    For each class c with count n_c < median m, synthetic copies are
+    generated by augmenting existing class-c samples until n_c reaches m.
+    Classes at or above the median are left unchanged.
+
+    Applied to training data only; val/test sets are never augmented.
 
     Args:
-        label_counts:  (C,) array of per-class positive counts.
-        very_rare_div: very_rare threshold = median / very_rare_div
-        rare_div:      rare threshold      = median / rare_div  (= median when 1.0)
+        texts:    List of preprocessed text strings.
+        labels_6: (N, 6) float32 label matrix (emotion-only samples).
+        aug:      Initialised nlpaug SynonymAug augmenter.
+        seed:     Random seed for reproducibility.
 
     Returns:
-        (very_rare_indices, rare_indices, common_indices)
+        (augmented_texts, augmented_labels_6).
     """
-    median           = float(np.median(label_counts))
-    thresh_very_rare = median / very_rare_div
-    thresh_rare      = median / rare_div
+    import random
+    rng    = random.Random(seed)
+    counts = labels_6.sum(axis=0)   # (6,) per-class positive counts
+    median = float(np.median(counts))
 
-    very_rare, rare, common = [], [], []
-    for i, c in enumerate(label_counts):
-        if c < thresh_very_rare:
-            very_rare.append(i)
-        elif c < thresh_rare:
-            rare.append(i)
-        else:
-            common.append(i)
+    extra_texts:  List[str]        = []
+    extra_labels: List[np.ndarray] = []
 
-    return very_rare, rare, common
+    for c in range(NUM_EMOTIONS):
+        n_c = int(counts[c])
+        if n_c >= median:
+            continue
+
+        pos_idx = np.where(labels_6[:, c] > 0)[0].tolist()
+        if not pos_idx:
+            continue
+
+        needed  = int(median) - n_c
+        pos_cycle = (pos_idx * (int(np.ceil(needed / len(pos_idx))) + 1))
+        rng.shuffle(pos_cycle)
+        generated = 0
+
+        for orig_idx in pos_cycle:
+            if generated >= needed:
+                break
+            try:
+                result   = aug.augment(texts[orig_idx], n=1)
+                aug_text = result[0] if isinstance(result, list) else result
+            except Exception:
+                aug_text = texts[orig_idx]   # fallback to original if augmenter fails
+            extra_texts.append(aug_text)
+            extra_labels.append(labels_6[orig_idx].copy())
+            generated += 1
+
+        print(f"[Augmentation] class={EMOTION_NAMES[c]:<12} "
+              f"n_c={n_c:>6} → +{generated} samples (target median={int(median)})")
+
+    if extra_texts:
+        texts    = list(texts) + extra_texts
+        labels_6 = np.vstack([labels_6, np.array(extra_labels)]).astype(np.float32)
+
+    return texts, labels_6
 
 
 #  Dataset
@@ -247,87 +437,35 @@ class EkmanDataset(Dataset):
     """
     Dataset for two-stage Ekman classification.
 
-    Args:
-        texts:               List[str]
-        labels_6:            (N, 6) float32 — one-hot 6 Ekman emotions
-        tokenizer:           HuggingFace tokenizer
-        max_length:          int
-        stage:               "stage1" → binary label (1,)
-                             "stage2" → 6-hot label (6,)
-        emotion_only:        Filter to emotion-positive samples (stage2 training)
-        augment_rare:        Apply synonym replacement augmentation
-        aug_copies_per_tier: dict with keys "very_rare", "rare", "common" → int
-        tier_indices:        dict with keys "very_rare", "rare", "common" → List[int]
+    Labels:
+        stage1 → (1,) float32 binary [has_emotion]
+        stage2 → (6,) float32 multi-label [emotion flags]
+
+    Augmentation (median-based, Stage 2 only) is applied externally before
+    constructing this dataset. The dataset itself only tokenises.
     """
 
     def __init__(
         self,
-        texts:               List[str],
-        labels_6:            np.ndarray,
+        texts:        List[str],
+        labels_6:     np.ndarray,
         tokenizer,
-        max_length:          int  = 128,
-        stage:               str  = "stage2",
-        emotion_only:        bool  = False,
-        augment_rare:        bool  = False,
-        aug_copies_per_tier: Dict[str, int]       = None,
-        tier_indices:        Dict[str, List[int]] = None,
-        # [MOI] stage1 resampling
-        resample_mode:       str   = "",    # ""=off | "downsample" | "oversample"
-        resample_ratio:      float = 1.0,   # target majority:minority ratio
-        resample_seed:       int   = 42,
+        max_length:   int  = 128,
+        stage:        str  = "stage2",
+        emotion_only: bool = False,
     ) -> None:
         self.tokenizer  = tokenizer
         self.max_length = max_length
         self.stage      = stage
 
-        if aug_copies_per_tier is None:
-            aug_copies_per_tier = {"very_rare": 4, "rare": 2, "common": 0}
-        if tier_indices is None:
-            tier_indices = {"very_rare": [], "rare": [], "common": list(range(NUM_EMOTIONS))}
-
         has_emotion = (labels_6.sum(axis=1) > 0).astype(np.float32)
 
-        # Filter to emotion-only for stage2 training
+        # Filter to emotion-positive samples for Stage 2 training
         if emotion_only:
-            mask     = has_emotion.astype(bool)
-            texts    = [t for t, m in zip(texts, mask) if m]
-            labels_6 = labels_6[mask]
+            mask        = has_emotion.astype(bool)
+            texts       = [t for t, m in zip(texts, mask) if m]
+            labels_6    = labels_6[mask]
             has_emotion = has_emotion[mask]
-
-        # [MOI] Resample stage1: downsample hoac oversample tren data goc
-        # (truoc augmentation de khong bị lẫn copies vào resampling)
-        if stage == "stage1" and resample_mode in ("downsample", "oversample"):
-            texts, labels_6, has_emotion = _resample_stage1(
-                texts, labels_6, has_emotion,
-                mode=resample_mode, ratio=resample_ratio, seed=resample_seed,
-            )
-
-        # Augmentation (stage2 only)
-        if augment_rare and stage == "stage2":
-            extra_texts:  List[str]        = []
-            extra_labels: List[np.ndarray] = []
-
-            for tier_name, copies in aug_copies_per_tier.items():
-                if copies <= 0:
-                    continue
-                tier_idx = tier_indices.get(tier_name, [])
-                if not tier_idx:
-                    continue
-                tier_mask = labels_6[:, tier_idx].sum(axis=1) > 0
-                n_tier    = int(tier_mask.sum())
-                for i, (t, l) in enumerate(zip(texts, labels_6)):
-                    if tier_mask[i]:
-                        for k in range(copies):
-                            aug = _synonym_replace(t, n=2, seed=i * 100 + k)
-                            extra_texts.append(aug)
-                            extra_labels.append(l.copy())
-                print(f"[DataLoader] Aug tier={tier_name:<10}: "
-                      f"{n_tier} samples × {copies} copies → +{n_tier * copies}")
-
-            if extra_texts:
-                texts       = list(texts) + extra_texts
-                labels_6    = np.vstack([labels_6, np.array(extra_labels)])
-                has_emotion = (labels_6.sum(axis=1) > 0).astype(np.float32)
 
         self.texts       = list(texts)
         self.labels_6    = labels_6.astype(np.float32)
@@ -351,100 +489,45 @@ class EkmanDataset(Dataset):
         if self.stage == "stage1":
             item["labels"] = torch.tensor([self.has_emotion[idx]], dtype=torch.float32)
         else:
-            item["labels"] = torch.tensor(self.labels_6[idx],      dtype=torch.float32)
+            item["labels"] = torch.tensor(self.labels_6[idx], dtype=torch.float32)
         return item
 
-#  Weighted sampler — three-tier
-def build_weighted_sampler(
-    dataset:         EkmanDataset,
-    sampler_power:   float,
-    boost_very_rare: float,
-    boost_rare:      float,
-    boost_common:    float,
-    tier_indices:    Dict[str, List[int]],
-) -> WeightedRandomSampler:
-    """Three-tier WeightedRandomSampler for Stage 2."""
-    labels_mat   = dataset.labels_6
-    label_counts = labels_mat.sum(axis=0).clip(min=1)
-    inv_freq     = (1.0 / label_counts) ** sampler_power   # (6,)
 
-    # Base weight = mean of inv_freq for the classes present in that sample
-    sample_weights = np.zeros(len(dataset), dtype=np.float64)
-    for i, row in enumerate(labels_mat):
-        pos = row > 0
-        sample_weights[i] = inv_freq[pos].mean() if pos.any() else inv_freq.min()
+#  Positive-weight computation
 
-    # Per-tier boost
-    for tier, boost in {"very_rare": boost_very_rare, "rare": boost_rare, "common": boost_common}.items():
-        if boost <= 1.0:
-            continue
-        idx = tier_indices.get(tier, [])
-        if idx:
-            sample_weights[labels_mat[:, idx].sum(axis=1) > 0] *= boost
-
-    return WeightedRandomSampler(
-        weights=torch.from_numpy(sample_weights).float(),
-        num_samples=len(dataset),
-        replacement=True,
-    )
-
-
-#  pos_weight helpers
 def compute_pos_weight_stage1(
-    dataset: EkmanDataset,
-    device:  torch.device,
-    scale:   float = 1.0,
+    has_emotion: np.ndarray,
+    device:      torch.device,
 ) -> torch.Tensor:
-    """(1,) pos_weight for Stage 1 binary BCE."""
-    n_emotion = max(float(dataset.has_emotion.sum()), 1.0)
-    n_neutral = max(float(len(dataset) - n_emotion), 1.0)
-    pw = (n_neutral / n_emotion) * scale
-    pw = float(np.clip(pw, 0.01, 200.0))
+    """
+    (1,) pos_weight for Stage 1 binary BCE.
+    w = n_neutral / n_emotion (inverse frequency).
+    """
+    n_emotion = max(float(has_emotion.sum()), 1.0)
+    n_neutral = max(float(len(has_emotion) - n_emotion), 1.0)
+    pw = float(np.clip(n_neutral / n_emotion, 0.01, 200.0))
+    print(f"[DataLoader] pos_weight (stage1): {pw:.2f}")
     return torch.tensor([pw], dtype=torch.float32, device=device)
 
 
 def compute_pos_weight_stage2(
-    dataset:            EkmanDataset,
-    device:             torch.device,
-    pw_scale_very_rare: float,
-    pw_scale_rare:      float,
-    pw_scale_common:    float,
-    tier_indices:       Dict[str, List[int]],
+    labels_6: np.ndarray,
+    device:   torch.device,
 ) -> torch.Tensor:
     """
-    (6,) per-class pos_weight for Stage 2.
+    (6,) per-class pos_weight for Stage 2 ASL.
 
-    Formula: pw[c] = (neg_count[c] / pos_count[c]) * scale[c]
-    where scale[c] is the tier-specific multiplier.
+    w_c = n_neg_c / n_pos_c
 
-    NOTE: uses multiply (*), NOT exponent (**), to keep values stable.
-
-    IMPORTANT: for multi-label data, neg_count[c] = N - pos_count[c] per class,
-    NOT N - total_label_counts. This avoids neg_counts going negative when a
-    sample carries multiple emotion labels (which is common after augmentation).
+    Computed on the post-augmentation label matrix so the weights reflect
+    the balanced distribution after augmentation.
     """
-    n            = len(dataset)
-    # pos_count[c]  = number of samples where class c == 1
-    # neg_count[c]  = number of samples where class c == 0
-    # These are per-class and always sum to N, so neg_count is always >= 0.
-    labels_mat   = dataset.labels_6
-    pos_counts   = (labels_mat > 0).sum(axis=0).astype(np.float64)  # đếm số ROWS có class đó → luôn <= n
-    pos_counts   = np.maximum(pos_counts, 1.0)
-    neg_counts   = np.maximum(n - pos_counts, 1.0)                   # luôn >= 0
-    label_counts = pos_counts                  # (C,) true per-class neg counts
+    n          = labels_6.shape[0]
+    pos_counts = np.maximum((labels_6 > 0).sum(axis=0).astype(np.float64), 1.0)
+    neg_counts = np.maximum(n - pos_counts, 1.0)
+    pw         = np.clip(neg_counts / pos_counts, 0.01, 200.0).astype(np.float32)
 
-    scale_map = np.ones(NUM_EMOTIONS, dtype=np.float32)
-    for idx in tier_indices.get("very_rare", []):
-        scale_map[idx] = pw_scale_very_rare
-    for idx in tier_indices.get("rare", []):
-        scale_map[idx] = pw_scale_rare
-    for idx in tier_indices.get("common", []):
-        scale_map[idx] = pw_scale_common
-
-    pw = (neg_counts / label_counts) * scale_map        # ← multiply, NOT **
-    pw = np.clip(pw, 0.01, 200.0)                       # safety clamp
-
-    print(f"[DataLoader] pos_weight (stage2):")
+    print("[DataLoader] pos_weight (stage2, post-augmentation):")
     for i, name in enumerate(EMOTION_NAMES):
         print(f"    {name:<12}: {pw[i]:.2f}")
 
@@ -452,14 +535,17 @@ def compute_pos_weight_stage2(
 
 
 #  CSV loading & splitting
+
 def _load_csv(filepath: str) -> Tuple[List[str], np.ndarray]:
+    """Load CSV and return (texts, labels_6) where labels_6 is (N, 6) float32."""
     df      = pd.read_csv(filepath)
     missing = [c for c in EMOTION_NAMES if c not in df.columns]
     if missing:
         raise ValueError(f"Missing columns {missing} in {filepath}")
     if "text" not in df.columns:
         raise ValueError(f"'text' column not found in {filepath}")
-    return df["text"].astype(str).tolist(), df[EMOTION_NAMES].values.astype(np.float32)
+    texts = [preprocess_text(t) for t in df["text"].astype(str).tolist()]
+    return texts, df[EMOTION_NAMES].values.astype(np.float32)
 
 
 def _split_data(
@@ -469,7 +555,7 @@ def _split_data(
     test_ratio: float = 0.10,
     seed:       int   = 42,
 ) -> Tuple:
-    """Stratified split preserving has_emotion balance."""
+    """Stratified two-stage split preserving emotion/neutral balance."""
     strat = (labels_6.sum(axis=1) > 0).astype(int)
     tv_t, test_t, tv_l, test_l = train_test_split(
         texts, labels_6, test_size=test_ratio, random_state=seed, stratify=strat,
@@ -481,24 +567,24 @@ def _split_data(
     )
     return tr_t, tr_l, val_t, val_l, test_t, test_l
 
+
 def _make_loader(
     dataset:     EkmanDataset,
     batch_size:  int,
     shuffle:     bool,
     num_workers: int,
-    sampler=None,
 ) -> DataLoader:
-    """Helper to build a DataLoader with consistent settings."""
     return DataLoader(
         dataset,
         batch_size=batch_size,
-        shuffle=(shuffle and sampler is None),
-        sampler=sampler,
+        shuffle=shuffle,
         num_workers=num_workers,
         pin_memory=True,
         persistent_workers=(num_workers > 0),
     )
 
+
+#  Main factory
 
 def get_dataloaders(
     cfg:   dict,
@@ -507,14 +593,18 @@ def get_dataloaders(
     """
     Build train/val/test DataLoaders for the given stage.
 
-    num_workers is read from cfg['data']['num_workers'] (default 4).
-    Set to 0 in your config to disable multiprocessing (useful for debugging).
+    Augmentation (median-based, nlpaug) is applied to Stage 2 training data
+    only. Stage 1 training data is downsampled to 1:1 ratio. Val and test
+    datasets are always unmodified. Sentence-level inference is handled
+    separately by sentence_predict().
 
     Returns:
         (train_loader, val_loader, test_loader, info_dict)
 
     info_dict keys:
-        emotion_names, pos_weight, label_counts, tier_indices, num_labels, pretrained
+        emotion_names, pos_weight, label_counts, num_labels, pretrained,
+        tokenizer, max_length, batch_size,
+        val_texts, val_labels, test_texts, test_labels
     """
     assert stage in ("stage1", "stage2"), f"Unknown stage '{stage}'"
 
@@ -522,13 +612,11 @@ def get_dataloaders(
     stage_cfg = cfg[stage]
     train_cfg = stage_cfg["training"]
 
-    data_dir    = data_cfg["data_dir"]
     max_length  = int(data_cfg.get("max_length",  128))
     batch_size  = int(train_cfg.get("batch_size", 32))
     seed        = int(data_cfg.get("seed",        42))
-    auto_split  = bool(data_cfg.get("auto_split", True))
-    # ── num_workers from config — set 0 to disable multiprocessing ───────────
-    num_workers = int(data_cfg.get("num_workers", 4))
+    auto_split  = bool(data_cfg.get("auto_split", False))
+    num_workers = int(data_cfg.get("num_workers", 2))
 
     model_name = stage_cfg["model"]["name"].lower()
     if model_name not in BACKBONE_REGISTRY:
@@ -539,17 +627,16 @@ def get_dataloaders(
     pretrained = BACKBONE_REGISTRY[model_name]["pretrained"]
     tokenizer  = AutoTokenizer.from_pretrained(pretrained)
 
-    #Load raw data
+    # Load raw data 
+    data_dir   = data_cfg["data_dir"]
     train_path = os.path.join(data_dir, data_cfg.get("train_file", "data1_train.csv"))
     val_path   = os.path.join(data_dir, data_cfg.get("val_file",   "data1_val.csv"))
     test_path  = os.path.join(data_dir, data_cfg.get("test_file",  "data1_test.csv"))
 
     if auto_split and (not os.path.isfile(val_path) or not os.path.isfile(test_path)):
-        print(f"[DataLoader] Auto-splitting '{train_path}' "
-              f"→ val={data_cfg.get('val_ratio', 0.1):.0%} / "
-              f"test={data_cfg.get('test_ratio', 0.1):.0%}")
+        print(f"[DataLoader] Auto-splitting '{train_path}'")
         all_t, all_l = _load_csv(train_path)
-        train_texts, train_labels, val_texts, val_labels, test_texts, test_labels = \
+        train_texts, train_labels_6, val_texts, val_labels_6, test_texts, test_labels_6 = \
             _split_data(all_t, all_l,
                         val_ratio=float(data_cfg.get("val_ratio",  0.10)),
                         test_ratio=float(data_cfg.get("test_ratio", 0.10)),
@@ -558,143 +645,124 @@ def get_dataloaders(
         for split, path in [("train", train_path), ("val", val_path), ("test", test_path)]:
             if not os.path.isfile(path):
                 raise FileNotFoundError(f"[DataLoader] {split} file not found: '{path}'")
-        train_texts, train_labels = _load_csv(train_path)
-        val_texts,   val_labels   = _load_csv(val_path)
-        test_texts,  test_labels  = _load_csv(test_path)
+        train_texts, train_labels_6 = _load_csv(train_path)
+        val_texts,   val_labels_6   = _load_csv(val_path)
+        test_texts,  test_labels_6  = _load_csv(test_path)
 
-    # Compute tiers from TRAIN label counts
-    train_counts  = train_labels.sum(axis=0)
-    very_rare_div = float(train_cfg.get("very_rare_divisor", 3.0))
-    rare_div      = float(train_cfg.get("rare_divisor",      1.0))
-    very_rare_idx, rare_idx, common_idx = compute_tiers(train_counts, very_rare_div, rare_div)
-    tier_indices = {"very_rare": very_rare_idx, "rare": rare_idx, "common": common_idx}
+    print(f"[DataLoader] stage={stage}  backbone={model_name}  num_workers={num_workers}")
+    has_emotion_train = (train_labels_6.sum(axis=1) > 0).astype(np.float32)
 
-    print(f"[DataLoader] Stage={stage}  backbone={model_name}  num_workers={num_workers}")
-    print(f"[DataLoader] Tier breakdown (train counts):")
-    for i, name in enumerate(EMOTION_NAMES):
-        tier = ("very_rare" if i in very_rare_idx else
-                "rare"      if i in rare_idx else "common")
-        print(f"    {name:<12}: {int(train_counts[i]):>6}  [{tier}]")
-
-    # Stage-specific dataset config 
-    emotion_only_train = (stage == "stage2")
-    augment_rare       = bool(train_cfg.get("augment_rare", False))
-    aug_copies = {
-        "very_rare": int(train_cfg.get("aug_copies_very_rare", 4)),
-        "rare":      int(train_cfg.get("aug_copies_rare",      2)),
-        "common":    int(train_cfg.get("aug_copies_common",    0)),
-    }
-
-    # [MOI] Stage 1 resampling config
-    #   downsample_majority: true  +  downsample_ratio: 1.0
-    #   oversample_minority: true  +  oversample_ratio: 1.0
-    #   (co the bat dong thoi de ket hop, but thong thuong chon 1)
-    resample_mode  = ""
-    resample_ratio = 1.0
     if stage == "stage1":
-        if bool(train_cfg.get("downsample_majority", False)):
-            resample_mode  = "downsample"
-            resample_ratio = float(train_cfg.get("downsample_ratio", 1.0))
-        elif bool(train_cfg.get("oversample_minority", False)):
-            resample_mode  = "oversample"
-            resample_ratio = float(train_cfg.get("oversample_ratio", 1.0))
+        # ── Stage 1:───────────────────────
+        sample_mode = train_cfg.get("sample", "down")  
+        ratio       = float(train_cfg.get("ratio", 1.0))
 
-    # Build datasets
-    train_ds = EkmanDataset(
-        train_texts, train_labels, tokenizer, max_length,
-        stage=stage, emotion_only=emotion_only_train,
-        augment_rare=augment_rare, aug_copies_per_tier=aug_copies,
-        tier_indices=tier_indices,
-        resample_mode=resample_mode,   # [MOI]
-        resample_ratio=resample_ratio, # [MOI]
-        resample_seed=seed,            # [MOI]
-    )
-    val_ds = EkmanDataset(
-        val_texts, val_labels, tokenizer, max_length,
-        stage=stage, emotion_only=emotion_only_train,
-        # val/test: khong resample, danh gia tren phan phoi that
-    )
-    test_ds = EkmanDataset(
-        test_texts, test_labels, tokenizer, max_length,
-        stage=stage, emotion_only=emotion_only_train,
-    )
+        # map sang mode đầy đủ
+        if sample_mode == "down":
+            mode = "downsample"
+        elif sample_mode == "over":
+            mode = "oversample"
+        else:
+            raise ValueError(f"Invalid sample mode: {sample_mode}. Use 'down' or 'over'.")
 
-    # Sampler
-    # Stage 1: use_weighted_sampler co the ket hop voi oversample de boost them
-    # Stage 2: three-tier sampler cho rare/very_rare classes
-    sampler     = None
-    use_sampler = bool(train_cfg.get("use_weighted_sampler", False))
-
-    if use_sampler and stage == "stage1":
-        # [MOI] Binary sampler: weight ngach nho hon cao hon
-        n_pos = float(train_ds.has_emotion.sum())
-        n_neg = float(len(train_ds) - n_pos)
-        w_pos = 1.0 / max(n_pos, 1.0)
-        w_neg = 1.0 / max(n_neg, 1.0)
-        sample_weights = np.where(train_ds.has_emotion > 0, w_pos, w_neg)
-        sampler = WeightedRandomSampler(
-            weights=torch.from_numpy(sample_weights).float(),
-            num_samples=len(train_ds),
-            replacement=True,
-        )
-        print(f"[DataLoader] Stage1 WeightedSampler: "
-              f"w_emotion={w_pos:.2e}  w_neutral={w_neg:.2e}  (effective ~1:1)")
-
-    elif use_sampler and stage == "stage2":
-        sampler = build_weighted_sampler(
-            train_ds,
-            sampler_power=   float(train_cfg.get("sampler_power",   2.0)),
-            boost_very_rare= float(train_cfg.get("boost_very_rare", 5.0)),
-            boost_rare=      float(train_cfg.get("boost_rare",      3.0)),
-            boost_common=    float(train_cfg.get("boost_common",    1.0)),
-            tier_indices=tier_indices,
+        train_texts, train_labels_6, has_emotion_train = _resample_stage1(
+            train_texts,
+            train_labels_6,
+            has_emotion_train,
+            mode=mode,
+            ratio=ratio,
+            seed=seed,
         )
 
-    train_loader = _make_loader(train_ds, batch_size, shuffle=True,  num_workers=num_workers, sampler=sampler)
+        train_ds = EkmanDataset(train_texts, train_labels_6, tokenizer, max_length,
+                                stage="stage1", emotion_only=False)
+        val_ds   = EkmanDataset(val_texts,   val_labels_6,   tokenizer, max_length,
+                                stage="stage1", emotion_only=False)
+        test_ds  = EkmanDataset(test_texts,  test_labels_6,  tokenizer, max_length,
+                                stage="stage1", emotion_only=False)
+
+        device     = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        pos_weight = compute_pos_weight_stage1(train_ds.has_emotion, device)
+        num_labels = 1
+
+        # Val/test labels for sentence_predict (binary: 1 = has emotion)
+        val_labels_out  = (val_labels_6.sum(axis=1,  keepdims=True) > 0).astype(np.float32)
+        test_labels_out = (test_labels_6.sum(axis=1, keepdims=True) > 0).astype(np.float32)
+
+    else:
+        # ── Stage 2: filter emotion-only, then median augmentation ────────────
+        # Filter train to emotion-only first (before augmentation)
+        emo_mask         = has_emotion_train.astype(bool)
+        train_texts_emo  = [t for t, m in zip(train_texts, emo_mask) if m]
+        train_labels_emo = train_labels_6[emo_mask]
+
+        do_augment = bool(train_cfg.get("augment", True))
+        if do_augment:
+            print("[DataLoader] Running median-based synonym augmentation (nlpaug)...")
+            aug = _build_augmenter()
+            train_texts_emo, train_labels_emo = augment_to_median_stage2(
+                train_texts_emo, train_labels_emo, aug, seed=seed
+            )
+            print(f"[DataLoader] Stage 2 training set after augmentation: "
+                  f"{len(train_texts_emo)} samples\n")
+        else:
+            print("[DataLoader] Augmentation disabled (stage2).")
+
+        train_ds = EkmanDataset(train_texts_emo, train_labels_emo, tokenizer, max_length,
+                                stage="stage2", emotion_only=False)
+        # Val/test: emotion-only subset (matches stage2 training distribution)
+        val_emo_mask  = (val_labels_6.sum(axis=1)  > 0)
+        test_emo_mask = (test_labels_6.sum(axis=1) > 0)
+        val_ds  = EkmanDataset(
+            [t for t, m in zip(val_texts,  val_emo_mask)  if m],
+            val_labels_6[val_emo_mask],  tokenizer, max_length, stage="stage2",
+        )
+        test_ds = EkmanDataset(
+            [t for t, m in zip(test_texts, test_emo_mask) if m],
+            test_labels_6[test_emo_mask], tokenizer, max_length, stage="stage2",
+        )
+
+        device     = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        pos_weight = compute_pos_weight_stage2(train_labels_emo, device)
+        num_labels = NUM_EMOTIONS
+
+        val_labels_out  = val_ds.labels_6
+        test_labels_out = test_ds.labels_6
+
+    # ── DataLoaders ───────────────────────────────────────────────────────────
+    train_loader = _make_loader(train_ds, batch_size, shuffle=True,  num_workers=num_workers)
     val_loader   = _make_loader(val_ds,   batch_size, shuffle=False, num_workers=num_workers)
     test_loader  = _make_loader(test_ds,  batch_size, shuffle=False, num_workers=num_workers)
-
-    # pos_weight 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    if stage == "stage1":
-        pos_weight = compute_pos_weight_stage1(
-            train_ds, device,
-            scale=float(train_cfg.get("pw_scale", 1.0)),
-        )
-        num_labels = 1
-        print(f"[DataLoader] pos_weight (stage1): {pos_weight.item():.2f}")
-    else:
-        pos_weight = compute_pos_weight_stage2(
-            train_ds, device,
-            pw_scale_very_rare=float(train_cfg.get("pw_scale_very_rare", 3.0)),
-            pw_scale_rare=     float(train_cfg.get("pw_scale_rare",      1.5)),
-            pw_scale_common=   float(train_cfg.get("pw_scale_common",    1.0)),
-            tier_indices=tier_indices,
-        )
-        num_labels = NUM_EMOTIONS
 
     label_counts_dict = {EMOTION_NAMES[i]: int(train_ds.labels_6[:, i].sum())
                          for i in range(NUM_EMOTIONS)}
     ne = int(train_ds.has_emotion.sum())
     label_counts_dict.update({"has_emotion": ne, "neutral": len(train_ds) - ne})
 
-    print(f"[DataLoader] Train: {len(train_ds)} | Val: {len(val_ds)} | Test: {len(test_ds)}")
+    print(f"[DataLoader] Train={len(train_ds)}  Val={len(val_ds)}  Test={len(test_ds)}")
 
     return train_loader, val_loader, test_loader, {
-        "emotion_names": EMOTION_NAMES,
-        "pos_weight":    pos_weight,
-        "label_counts":  label_counts_dict,
-        "tier_indices":  tier_indices,
-        "num_labels":    num_labels,
-        "pretrained":    pretrained,
+        "emotion_names":  EMOTION_NAMES,
+        "pos_weight":     pos_weight,
+        "label_counts":   label_counts_dict,
+        "num_labels":     num_labels,
+        "pretrained":     pretrained,
+        "tokenizer":      tokenizer,
+        "max_length":     max_length,
+        "batch_size":     batch_size,
+        # Raw text + labels for sentence_predict
+        "val_texts":      val_ds.texts,
+        "val_labels":     val_labels_out,
+        "test_texts":     test_ds.texts,
+        "test_labels":    test_labels_out,
     }
 
 
 def get_raw_splits(cfg: dict) -> Tuple:
+    """Return raw (train_texts, train_labels_6, ...) splits without any processing."""
     data_cfg   = cfg["data"]
     data_dir   = data_cfg["data_dir"]
-    auto_split = bool(data_cfg.get("auto_split", True))
+    auto_split = bool(data_cfg.get("auto_split", False))
     seed       = int(data_cfg.get("seed", 42))
 
     train_path = os.path.join(data_dir, data_cfg.get("train_file", "data1_train.csv"))
