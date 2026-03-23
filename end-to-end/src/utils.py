@@ -1,12 +1,3 @@
-"""
-src/utils.py
-Shared utilities for Two-Stage Ekman Emotion Classification.
-
-Key additions vs original:
-  - get_run_dir()  YOLO-style auto-increment run directories
-                   e.g. run_2_stage/electra+deberta_2/ on second run
-"""
-
 from __future__ import annotations
 
 import os
@@ -22,19 +13,10 @@ from torch.optim import lr_scheduler
 from transformers import get_cosine_schedule_with_warmup
 import yaml
 
-
-# =============================================================================
-#  Config
-# =============================================================================
-
 def load_config(path: str = "config/config.yaml") -> dict:
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
-
-# =============================================================================
-#  Reproducibility
-# =============================================================================
 
 def set_seed(seed: int = 42) -> None:
     random.seed(seed)
@@ -45,30 +27,7 @@ def set_seed(seed: int = 42) -> None:
     torch.backends.cudnn.benchmark     = False
 
 
-# =============================================================================
-#  YOLO-style run directory
-# =============================================================================
-
 def get_run_dir(cfg: dict) -> Tuple[str, str]:
-    """
-    Return (run_dir, run_name) for the current experiment, creating the
-    directory if it does not exist.
-
-    Naming convention:
-        <run_base_dir>/run_2_stage/<s1>+<s2>/          ← first run
-        <run_base_dir>/run_2_stage/<s1>+<s2>_2/        ← second run
-        <run_base_dir>/run_2_stage/<s1>+<s2>_3/        ← third run …
-
-    where <s1> = stage1 model name, <s2> = stage2 model name.
-
-    Args:
-        cfg: Full config dict (with run_base_dir, stage1.model.name,
-             stage2.model.name keys).
-
-    Returns:
-        run_dir  : absolute path to the run directory (already created).
-        run_name : bare name, e.g. "electra+deberta_2".
-    """
     base    = cfg.get("run_base_dir", ".")
     s1_name = cfg["stage1"]["model"]["name"]
     s2_name = cfg["stage2"]["model"]["name"]
@@ -77,7 +36,6 @@ def get_run_dir(cfg: dict) -> Tuple[str, str]:
     root = os.path.join(base, "run_2_stage")
     os.makedirs(root, exist_ok=True)
 
-    # Find next available slot (YOLO-style)
     candidate = os.path.join(root, base_name)
     if not os.path.exists(candidate):
         run_dir  = candidate
@@ -93,7 +51,6 @@ def get_run_dir(cfg: dict) -> Tuple[str, str]:
                 break
             n += 1
 
-    # Create sub-directories
     for sub in [
         "checkpoints",
         "logs",
@@ -119,7 +76,6 @@ def get_existing_run_dir(cfg: dict) -> str:
     base_name = f"{s1_name}+{s2_name}"
     root    = os.path.join(base, "run_2_stage")
 
-    # Collect all matching directories
     candidates = []
     base_path = os.path.join(root, base_name)
     if os.path.isdir(base_path):
@@ -144,21 +100,7 @@ def get_existing_run_dir(cfg: dict) -> str:
     _, latest = sorted(candidates)[-1]
     return latest
 
-
-# =============================================================================
-#  Optimizers & Schedulers
-# =============================================================================
-
 def get_optimizer(model: nn.Module, cfg: dict) -> optim.Optimizer:
-    """
-    Build optimizer với param groups phù hợp từng training_mode:
-
-      finetune        backbone lr=lr,  head lr=lr*3
-      freeze_backbone chỉ train head (frozen params bị skip tự động)
-      from_scratch    toàn bộ model cùng lr (không split backbone/head)
-      llrd            Layerwise LR Decay — mỗi transformer layer nhận
-                      lr * decay_rate^depth, layer thấp nhất lr nhỏ nhất
-    """
     train_cfg     = cfg["training"]
     name          = train_cfg.get("optimizer", "adamw").lower()
     lr            = float(train_cfg.get("lr",           2e-5))
@@ -171,7 +113,6 @@ def get_optimizer(model: nn.Module, cfg: dict) -> optim.Optimizer:
         if name == "sgd":   return optim.SGD(param_groups, momentum=0.9)
         raise ValueError(f"Unknown optimizer: '{name}'")
 
-    # ── freeze_backbone: chỉ head được train ─────────────────────────────────
     if training_mode == "freeze_backbone":
         head_params = [p for n, p in model.named_parameters()
                        if "classifiers" in n and p.requires_grad]
@@ -181,19 +122,16 @@ def get_optimizer(model: nn.Module, cfg: dict) -> optim.Optimizer:
         print(f"[optimizer] freeze_backbone — chỉ train head, lr={lr*3:.2e}")
         return _make_optimizer(param_groups)
 
-    # ── from_scratch: toàn bộ model cùng lr (không cần split) ────────────────
     if training_mode == "from_scratch":
         all_params = [p for p in model.parameters() if p.requires_grad]
         param_groups = [{"params": all_params, "lr": lr, "weight_decay": wd}]
         print(f"[optimizer] from_scratch — train toàn bộ, lr={lr:.2e}")
         return _make_optimizer(param_groups)
 
-    # ── llrd: Layerwise Learning Rate Decay ───────────────────────────────────
     if training_mode == "llrd":
         decay_rate = float(train_cfg.get("llrd_decay_rate", 0.8))
         return _build_llrd_optimizer(model, lr, wd, decay_rate, name)
 
-    # ── finetune (default): backbone lr, head lr*3 ───────────────────────────
     backbone_params, classifier_params = [], []
     for pname, param in model.named_parameters():
         if not param.requires_grad:
@@ -215,21 +153,6 @@ def _build_llrd_optimizer(
     decay_rate: float,
     opt_name:   str,
 ) -> optim.Optimizer:
-    """
-    Layerwise LR Decay cho transformer encoder.
-
-    Chiến lược:
-      - Classifiers (head)      : base_lr * 3          (lr cao nhất)
-      - Transformer layers      : base_lr * decay^depth (top→bottom)
-      - Embeddings              : base_lr * decay^(n_layers+1) (lr thấp nhất)
-      - Pooler (nếu có)         : base_lr
-
-    depth=0 là layer transformer cao nhất (gần head nhất).
-
-    Với decay_rate=0.8 và 12 layers BERT:
-      head=6e-5, L11=2e-5, L10=1.6e-5, ..., L0≈2.1e-6, emb≈1.7e-6
-    """
-    # Lấy danh sách transformer layers (hỗ trợ BERT/RoBERTa/DeBERTa/ELECTRA)
     backbone = model.backbone
     encoder_layers = None
     for attr in ["encoder.layer", "encoder.layers", "transformer.layer"]:
@@ -243,7 +166,6 @@ def _build_llrd_optimizer(
             continue
 
     if encoder_layers is None:
-        # Fallback: không nhận diện được cấu trúc → dùng finetune thường
         print("[LLRD] Cảnh báo: không nhận diện được encoder layers, fallback sang finetune.")
         backbone_params    = [p for n, p in model.named_parameters()
                               if "classifiers" not in n and p.requires_grad]
@@ -259,7 +181,6 @@ def _build_llrd_optimizer(
     param_groups: list = []
     assigned: set = set()
 
-    # 1. Head (classifiers) — lr cao nhất
     head_params = [(n, p) for n, p in model.named_parameters()
                    if "classifiers" in n and p.requires_grad]
     if head_params:
@@ -271,7 +192,6 @@ def _build_llrd_optimizer(
         })
         assigned.update(id(p) for _, p in head_params)
 
-    # 2. Transformer layers — depth 0 = layer cao nhất
     for depth, layer in enumerate(reversed(encoder_layers)):
         layer_lr = base_lr * (decay_rate ** depth)
         layer_params = [(n, p) for n, p in layer.named_parameters(recurse=True)
@@ -285,7 +205,6 @@ def _build_llrd_optimizer(
             })
             assigned.update(id(p) for _, p in layer_params)
 
-    # 3. Pooler (nếu có) — lr bằng base_lr
     pooler_params = [(n, p) for n, p in backbone.named_parameters()
                      if "pooler" in n and p.requires_grad and id(p) not in assigned]
     if pooler_params:
@@ -297,7 +216,6 @@ def _build_llrd_optimizer(
         })
         assigned.update(id(p) for _, p in pooler_params)
 
-    # 4. Embeddings + LayerNorm đầu — lr thấp nhất
     emb_lr = base_lr * (decay_rate ** n_layers)
     emb_params = [(n, p) for n, p in backbone.named_parameters()
                   if p.requires_grad and id(p) not in assigned]
@@ -309,7 +227,6 @@ def _build_llrd_optimizer(
             "name":         "embeddings",
         })
 
-    # Log tóm tắt
     print(f"[optimizer] llrd — {n_layers} layers, decay={decay_rate}")
     print(f"  head      lr={base_lr*3:.2e}")
     for g in param_groups:
@@ -353,11 +270,6 @@ def get_scheduler(optimizer, cfg: dict, num_training_steps: int):
         return None
     raise ValueError(f"Unknown scheduler: '{name}'")
 
-
-# =============================================================================
-#  AverageMeter
-# =============================================================================
-
 class AverageMeter:
     def __init__(self, name: str = ""):
         self.name = name
@@ -375,11 +287,6 @@ class AverageMeter:
     @property
     def avg(self) -> float:
         return self.sum / self.count if self.count else 0.0
-
-
-# =============================================================================
-#  Threshold helpers
-# =============================================================================
 
 def apply_threshold(probs: np.ndarray, threshold) -> np.ndarray:
     """
@@ -418,11 +325,6 @@ def find_best_thresholds(
         best_thresholds[c] = best_t
     return best_thresholds
 
-
-# =============================================================================
-#  Config summary saver
-# =============================================================================
-
 def save_config_summary(
     run_dir:      str,
     cfg:          dict,
@@ -433,24 +335,6 @@ def save_config_summary(
     n_val:        int,
     n_test:       int,
 ) -> str:
-    """
-    Write a human-readable config summary for one training stage to
-    <run_dir>/logs/config_<stage>.txt.
-
-    Captures all information needed to reproduce or compare runs:
-    data split, augmentation, sampler, loss, model, optimizer, scheduler.
-
-    Args:
-        run_dir:  Run output directory.
-        cfg:      Full config dict.
-        stage:    "stage1" or "stage2".
-        info:     Dict returned by get_dataloaders() (tier_indices, label_counts, …).
-        n_params: Number of trainable model parameters.
-        n_train / n_val / n_test: Dataset sizes after filtering / augmentation.
-
-    Returns:
-        Path to the written file.
-    """
     stage_cfg = cfg[stage]
     train_cfg = stage_cfg["training"]
     data_cfg  = cfg["data"]
@@ -471,7 +355,6 @@ def save_config_summary(
     A(f"  Path: {run_dir}")
     A("=" * 60)
 
-    # ── Model ──────────────────────────────────────────────────────────────
     A("\n[Model]")
     A(f"  name        : {model_name}")
     A(f"  pretrained  : {pretrained}")
@@ -479,7 +362,6 @@ def save_config_summary(
     A(f"  params      : {n_params:,}")
     A(f"  num_labels  : {info.get('num_labels', '?')}")
 
-    # ── Data ───────────────────────────────────────────────────────────────
     A("\n[Data]")
     A(f"  train_file  : {data_cfg.get('train_file', '?')}")
     A(f"  auto_split  : {data_cfg.get('auto_split', True)}")
@@ -491,7 +373,6 @@ def save_config_summary(
     A(f"  n_val       : {n_val}")
     A(f"  n_test      : {n_test}")
 
-    # ── Class counts & tiers (Stage 2) ─────────────────────────────────────
     if stage == "stage2":
         A("\n[Class Counts & Tiers]")
         import numpy as np
@@ -510,8 +391,6 @@ def save_config_summary(
         A("\n[Class Counts]")
         A(f"  has_emotion : {label_counts.get('has_emotion', '?')}")
         A(f"  neutral     : {label_counts.get('neutral', '?')}")
-
-    # ── Augmentation ───────────────────────────────────────────────────────
     A("\n[Augmentation]")
     aug = bool(train_cfg.get("augment_rare", False))
     A(f"  augment_rare: {aug}")
@@ -520,7 +399,6 @@ def save_config_summary(
         A(f"  aug_copies_rare      : {train_cfg.get('aug_copies_rare',      2)}")
         A(f"  aug_copies_common    : {train_cfg.get('aug_copies_common',    0)}")
 
-    # ── Sampler ────────────────────────────────────────────────────────────
     A("\n[Sampler]")
     use_s = bool(train_cfg.get("use_weighted_sampler", stage == "stage2"))
     A(f"  use_weighted_sampler: {use_s}")
@@ -530,7 +408,6 @@ def save_config_summary(
         A(f"  boost_rare          : {train_cfg.get('boost_rare',      3.0)}")
         A(f"  boost_common        : {train_cfg.get('boost_common',    1.0)}")
 
-    # ── pos_weight ─────────────────────────────────────────────────────────
     A("\n[pos_weight]")
     if stage == "stage1":
         A(f"  pw_scale            : {train_cfg.get('pw_scale', 1.0)}")
@@ -539,12 +416,11 @@ def save_config_summary(
         A(f"  pw_scale_rare       : {train_cfg.get('pw_scale_rare',      1.5)}")
         A(f"  pw_scale_common     : {train_cfg.get('pw_scale_common',    1.0)}")
 
-    # ── Loss ───────────────────────────────────────────────────────────────
     A("\n[Loss]")
     loss_name = train_cfg.get("loss", "bce_weighted")
     A(f"  loss                : {loss_name}")
     if loss_name in ("bce", "bce_weighted"):
-        pass   # nothing extra to log
+        pass   
     elif loss_name == "focal_bce":
         A(f"  focal_gamma         : {train_cfg.get('focal_gamma', 2.0)}")
     elif loss_name == "asymmetric":
@@ -562,7 +438,6 @@ def save_config_summary(
         A(f"  common     gamma_neg: {train_cfg.get('asl_gamma_neg_common',    2.0)}")
         A(f"  common     clip     : {train_cfg.get('asl_clip_common',         0.0)}")
 
-    # ── Training ───────────────────────────────────────────────────────────
     A("\n[Training]")
     A(f"  epochs              : {train_cfg.get('epochs', '?')}")
     A(f"  batch_size          : {train_cfg.get('batch_size', 32)}")
