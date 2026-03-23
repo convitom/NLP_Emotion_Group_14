@@ -1,5 +1,5 @@
 """
-diagnose.py — Phân tích class overlap & chẩn đoán tại sao F1 thấp.
+diagnose.py 
 """
 
 from __future__ import annotations
@@ -21,9 +21,6 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 warnings.filterwarnings("ignore")
 
-# =============================================================================
-#  Constants
-# =============================================================================
 hieu = "train"
 DATA_PATH = r"D:\USTH\nlp\NLP_Emotion_Group_14\end-to-end\data\data1_{hieu}.csv".format(hieu=hieu)
 MODEL_PATH = r"end-to-end\results\bert\checkpoints\bert_e2e_emotion.pth"
@@ -47,9 +44,6 @@ CLASS_COLORS = {
     "neutral":  "#95a5a6",
 }
 
-# =============================================================================
-#  Data loading
-# =============================================================================
 
 def load_data(csv_path: str):
     df = pd.read_csv(csv_path)
@@ -63,17 +57,17 @@ def get_model_suffix(model_path: Optional[str]):
     if model_path is None:
         return ""
 
-    name = os.path.basename(model_path)          # electra_e2e_emotion.pth
-    name = os.path.splitext(name)[0]             # electra_e2e_emotion
-    name = name.replace("_emotion", "")          # electra_e2e
+    name = os.path.basename(model_path)         
+    name = os.path.splitext(name)[0]             
+    name = name.replace("_emotion", "")          
     return name
 
 def get_dataset_suffix(data_path: Optional[str]):
     if data_path is None:
         return ""
 
-    name = os.path.basename(data_path)          # data1_train.csv
-    name = os.path.splitext(name)[0]             # data1_train
+    name = os.path.basename(data_path)         
+    name = os.path.splitext(name)[0]            
     return name
 
 def get_single_label_mask(labels_7):
@@ -86,11 +80,9 @@ def get_class_label(labels_7):
     mask = (n == 1)
     out[mask] = np.argmax(labels_7[mask], axis=1)
     return out
-
-
-# =============================================================================
+    
 #  Feature extraction
-# =============================================================================
+
 
 def extract_tfidf(texts, max_features=5000):
     vec = TfidfVectorizer(max_features=max_features, ngram_range=(1, 2), min_df=3)
@@ -143,9 +135,8 @@ def extract_model_embeddings(texts, model_path, batch_size=64, device_str="auto"
     return np.vstack(embeddings)
 
 
-# =============================================================================
+
 #  Plot utils
-# =============================================================================
 
 def reduce_to_2d(X):
     if X.shape[1] > 50:
@@ -187,16 +178,13 @@ def plot_class_overlap(X, class_ids, out_path):
 
     plt.figure(figsize=(8, 6))
 
-    # 🔥 dùng colormap đẹp hơn (đậm khi cao)
     im = plt.imshow(sim, cmap="YlOrRd", vmin=0, vmax=1)
 
     plt.colorbar(im)
 
-    # 🔥 set label = tên class
     plt.xticks(ticks=np.arange(NUM_CLASSES), labels=CLASS_NAMES, rotation=45)
     plt.yticks(ticks=np.arange(NUM_CLASSES), labels=CLASS_NAMES)
 
-    # 🔥 hiển thị số trong từng ô
     for i in range(NUM_CLASSES):
         for j in range(NUM_CLASSES):
             value = sim[i, j]
@@ -215,10 +203,8 @@ def plot_class_overlap(X, class_ids, out_path):
 
     return sim
 
-
-# =============================================================================
 #  Main
-# =============================================================================
+
 
 def diagnose(
     data_path,
@@ -273,11 +259,7 @@ def diagnose(
 
     print(f"Done. Output: {out_dir}")
 
-
-# =============================================================================
 # CONFIG
-# =============================================================================
-
 
 
 if __name__ == "__main__":
