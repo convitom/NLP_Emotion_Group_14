@@ -1,25 +1,3 @@
-"""
-src/test.py
-Single-Stage End-to-End Ekman Classification — Evaluation.
-
-Results saved under:
-    <run_dir>/results/
-        report.txt
-        metrics.csv
-        per_class.csv
-        per_class_f1.png
-        thresholds.png
-        heatmap.png
-        pr_curve.png
-        confusion.png
-        confusion_aggregate.png
-
-CLI:
-    python src/test.py
-    python src/test.py --config config/config.yaml
-    python src/test.py --run_dir /content/drive/MyDrive/run_e2e/deberta
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -47,10 +25,6 @@ from src.dataloader import get_dataloaders, CLASS_NAMES, NUM_CLASSES
 from src.train import build_model, get_existing_run_dir
 from src.utils import load_config, set_seed, apply_threshold, find_best_thresholds
 
-
-# =============================================================================
-#  Plotting helpers
-# =============================================================================
 
 def _plot_hbar_f1(f1s, names, path, title=""):
     fig, ax = plt.subplots(figsize=(9, max(4, len(names) * 0.8)))
@@ -149,11 +123,6 @@ def _plot_confusion_multilabel(y_true, y_pred, names, path, title=""):
     fig.suptitle(title, fontsize=11)
     plt.tight_layout(); fig.savefig(path, dpi=150); plt.close(fig)
 
-
-# =============================================================================
-#  Inference helper
-# =============================================================================
-
 def _infer(model, loader, device, desc="Inference") -> Tuple[np.ndarray, np.ndarray]:
     probs_list, labels_list = [], []
     pbar = tqdm(loader, desc=desc, leave=True, dynamic_ncols=True,
@@ -184,10 +153,6 @@ def _load_checkpoint(run_dir: str, cfg: dict, device: torch.device):
           f"val_macro_f1={ckpt.get('val_macro_f1', float('nan')):.4f}")
     return model, ckpt
 
-
-# =============================================================================
-#  Evaluation
-# =============================================================================
 
 def evaluate(
     config_path: str = "config/config.yaml",
@@ -304,10 +269,6 @@ def evaluate(
         "best_thresholds": best_ts, "out_dir": out_dir,
     }
 
-
-# =============================================================================
-#  CLI
-# =============================================================================
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
