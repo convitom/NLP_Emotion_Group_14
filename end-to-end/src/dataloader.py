@@ -1,26 +1,3 @@
-"""
-src/dataloader.py
-Single-Stage End-to-End Ekman Classification — DataLoader.
-
-Task: 7-class multi-label (6 emotions + neutral) on ALL samples.
-
-Data format (CSV):
-    text | anger | disgust | fear | joy | sadness | surprise
-    - Emotion samples : one or more emotion columns = 1
-    - Neutral samples : all 6 emotion columns = 0  →  neutral label auto-derived
-
-Class counts (approx):
-    joy      19,794  ┐
-    anger     7,813  │ common
-    surprise  5,418  │
-    sadness   5,392  ┘
-    neutral  14,497    rare
-    disgust   3,366    rare
-    fear      1,941    very_rare
-
-Three-tier imbalance strategy — tiers computed dynamically from train data.
-"""
-
 from __future__ import annotations
 
 import os
@@ -36,10 +13,6 @@ from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 from transformers import AutoTokenizer
 
 
-# =============================================================================
-#  Backbone registry
-# =============================================================================
-
 BACKBONE_REGISTRY: Dict[str, Dict[str, str]] = {
     "bert":    {"pretrained": "google-bert/bert-base-uncased",     "amp_dtype": "float16"},
     "roberta": {"pretrained": "FacebookAI/roberta-base",           "amp_dtype": "float16"},
@@ -47,20 +20,12 @@ BACKBONE_REGISTRY: Dict[str, Dict[str, str]] = {
     "deberta": {"pretrained": "microsoft/deberta-v3-base",         "amp_dtype": "bfloat16"},
 }
 
-# =============================================================================
-#  Label metadata
-# =============================================================================
-
 EMOTION_NAMES: List[str] = ["anger", "disgust", "fear", "joy", "sadness", "surprise"]
 NUM_EMOTIONS:  int        = len(EMOTION_NAMES)    # 6
 CLASS_NAMES:   List[str] = EMOTION_NAMES + ["neutral"]
 NUM_CLASSES:   int        = len(CLASS_NAMES)      # 7
 NEUTRAL_IDX:   int        = 6
 
-
-# =============================================================================
-#  Synonym augmentation
-# =============================================================================
 
 _SYNONYM_MAP: Dict[str, List[str]] = {
     "happy":     ["glad", "pleased", "delighted", "joyful"],
@@ -104,35 +69,16 @@ def _synonym_replace(text: str, n: int = 2, seed: int = None) -> str:
             replaced += 1
     return " ".join(words)
 
-
-# =============================================================================
-#  Text preprocessing
-# =============================================================================
-
-# Regex patterns (compiled once for performance)
 _RE_URL     = re.compile(r"https?://\S+|www\.\S+")
 _RE_MENTION = re.compile(r"@\w+")
 _RE_SPACES  = re.compile(r"\s+")
 
 
 def preprocess_text(text: str) -> str:
-    """
-    Clean raw social-media text before tokenisation.
-
-    Steps (order matters):
-      1. Replace URLs     → '<url>'
-      2. Replace mentions → '<mention>'
-      3. Collapse extra whitespace (tabs, newlines, multiple spaces) → single space
-    """
     text = _RE_URL.sub("<url>", text)
     text = _RE_MENTION.sub("<mention>", text)
     text = _RE_SPACES.sub(" ", text).strip()
     return text
-
-
-# =============================================================================
-#  Tier classification
-# =============================================================================
 
 def compute_tiers(
     label_counts:  np.ndarray,
@@ -153,18 +99,7 @@ def compute_tiers(
     return very_rare, rare, common
 
 
-# =============================================================================
-#  Dataset
-# =============================================================================
-
 class EkmanDataset(Dataset):
-    """
-    7-class multi-label dataset for end-to-end Ekman classification.
-
-    Labels: (7,) float32
-        cols 0-5 = emotion one-hots  (EMOTION_NAMES order)
-        col  6   = neutral            (1 iff all emotion cols = 0)
-    """
 
     def __init__(
         self,
@@ -230,11 +165,6 @@ class EkmanDataset(Dataset):
             "labels":         torch.tensor(self.labels_7[idx], dtype=torch.float32),
         }
 
-
-# =============================================================================
-#  Weighted sampler
-# =============================================================================
-
 def build_weighted_sampler(
     dataset:         EkmanDataset,
     sampler_power:   float,
@@ -265,11 +195,6 @@ def build_weighted_sampler(
         replacement=True,
     )
 
-
-# =============================================================================
-#  pos_weight
-# =============================================================================
-
 def compute_pos_weight(
     dataset:            EkmanDataset,
     device:             torch.device,
@@ -280,10 +205,10 @@ def compute_pos_weight(
 ) -> torch.Tensor:
     n            = len(dataset)
     labels_mat   = dataset.labels_7
-    pos_counts   = (labels_mat > 0).sum(axis=0).astype(np.float64)  # đếm số ROWS có class đó → luôn <= n
+    pos_counts   = (labels_mat > 0).sum(axis=0).astype(np.float64) 
     pos_counts   = np.maximum(pos_counts, 1.0)
-    neg_counts   = np.maximum(n - pos_counts, 1.0)                   # luôn >= 0
-    label_counts = pos_counts        # tránh âm
+    neg_counts   = np.maximum(n - pos_counts, 1.0)                 
+    label_counts = pos_counts        
 
     scale_map = np.ones(NUM_CLASSES, dtype=np.float32)
     for idx in tier_indices.get("very_rare", []):
@@ -293,14 +218,10 @@ def compute_pos_weight(
     for idx in tier_indices.get("common", []):
         scale_map[idx] = pw_scale_common
 
-    pw = (neg_counts / label_counts) * scale_map  # ✅ * thay vì **
+    pw = (neg_counts / label_counts) * scale_map  
     return torch.tensor(pw, dtype=torch.float32, device=device)
     
 
-
-# =============================================================================
-#  CSV loading & splitting
-# =============================================================================
 
 def _load_csv(filepath: str) -> Tuple[List[str], np.ndarray]:
     df      = pd.read_csv(filepath)
@@ -329,20 +250,7 @@ def _split_data(
     return tr_t, tr_l, val_t, val_l, test_t, test_l
 
 
-# =============================================================================
-#  Main factory
-# =============================================================================
-
 def get_dataloaders(cfg: dict) -> Tuple[DataLoader, DataLoader, DataLoader, Dict]:
-    """
-    Build train/val/test DataLoaders for 7-class end-to-end task.
-
-    Returns:
-        (train_loader, val_loader, test_loader, info_dict)
-
-    info_dict keys: class_names, pos_weight, label_counts,
-                    tier_indices, num_labels, pretrained
-    """
     data_cfg  = cfg["data"]
     stage_cfg = cfg["e2e"]
     train_cfg = stage_cfg["training"]
@@ -360,7 +268,6 @@ def get_dataloaders(cfg: dict) -> Tuple[DataLoader, DataLoader, DataLoader, Dict
     pretrained = BACKBONE_REGISTRY[model_name]["pretrained"]
     tokenizer  = AutoTokenizer.from_pretrained(pretrained)
 
-    # ── Load raw data ─────────────────────────────────────────────────────────
     train_path = os.path.join(data_dir, data_cfg.get("train_file", "data1_train.csv"))
     val_path   = os.path.join(data_dir, data_cfg.get("val_file",   "data1_val.csv"))
     test_path  = os.path.join(data_dir, data_cfg.get("test_file",  "data1_test.csv"))
@@ -381,7 +288,6 @@ def get_dataloaders(cfg: dict) -> Tuple[DataLoader, DataLoader, DataLoader, Dict
         val_texts,   val_labels   = _load_csv(val_path)
         test_texts,  test_labels  = _load_csv(test_path)
 
-    # ── Tier computation on 7-class train counts ──────────────────────────────
     train_neutral_col = (~(train_labels.sum(axis=1) > 0)).astype(np.float32).reshape(-1, 1)
     train_labels_7    = np.concatenate([train_labels, train_neutral_col], axis=1)
     train_counts_7    = train_labels_7.sum(axis=0)
