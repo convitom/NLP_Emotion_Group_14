@@ -1,15 +1,3 @@
-"""
-models/loss.py
-Loss functions for Two-Stage Ekman Emotion Classification.
-
-Supported loss types (config key training.loss):
-  "bce"           Standard BCEWithLogitsLoss
-  "bce_weighted"  BCEWithLogitsLoss with pos_weight        ← Stage 1 default
-  "focal_bce"     Focal-weighted BCE
-  "asymmetric"    ASL — same gamma for all classes
-  "per_class_asl" Three-tier ASL — very_rare / rare / common   ← Stage 2 default
-"""
-
 from __future__ import annotations
 
 from typing import Dict, List, Optional
@@ -20,12 +8,6 @@ import torch.nn.functional as F
 
 
 __all__ = ["BCELoss", "FocalBCELoss", "AsymmetricLoss", "TieredPerClassASL", "get_loss_fn"]
-
-
-# =============================================================================
-#  1. BCE
-# =============================================================================
-
 class BCELoss(nn.Module):
     def __init__(self, pos_weight: Optional[torch.Tensor] = None, reduction: str = "mean"):
         super().__init__()
@@ -33,11 +15,6 @@ class BCELoss(nn.Module):
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         return self.loss_fn(logits, targets)
-
-
-# =============================================================================
-#  2. Focal BCE
-# =============================================================================
 
 class FocalBCELoss(nn.Module):
     def __init__(self, gamma: float = 2.0, alpha: float = 0.25,
@@ -57,13 +34,7 @@ class FocalBCELoss(nn.Module):
                ((1 - p_t) ** self.gamma) * bce
         return loss.mean() if self.reduction == "mean" else loss.sum() if self.reduction == "sum" else loss
 
-
-# =============================================================================
-#  3. Standard ASL
-# =============================================================================
-
 class AsymmetricLoss(nn.Module):
-    """Same gamma for all classes."""
 
     def __init__(self, gamma_pos: float = 0.0, gamma_neg: float = 4.0,
                  clip: float = 0.05, reduction: str = "mean"):
@@ -81,23 +52,7 @@ class AsymmetricLoss(nn.Module):
         loss = -(lp + ln)
         return loss.mean() if self.reduction == "mean" else loss.sum() if self.reduction == "sum" else loss
 
-
-# =============================================================================
-#  4. Three-Tier Per-Class ASL  (Stage 2 default)
-# =============================================================================
-
 class TieredPerClassASL(nn.Module):
-    """
-    Asymmetric Loss with three independent sets of gammas:
-      very_rare (e.g. fear):    lowest gamma_neg — model stays sensitive
-      rare      (e.g. disgust): moderate gamma_neg
-      common    (joy, anger …): highest gamma_neg — aggressively down-weight easy negatives
-
-    Args:
-        tier_indices:  dict {"very_rare": [idx, ...], "rare": [...], "common": [...]}
-        gamma configs: see below
-    """
-
     def __init__(
         self,
         tier_indices:           Dict[str, List[int]],
@@ -120,8 +75,6 @@ class TieredPerClassASL(nn.Module):
             "common":    (gamma_pos_common,    gamma_neg_common,    clip_common),
         }
         self.reduction = reduction
-
-        # Build per-class gamma arrays when first called (deferred to allow device placement)
         self._num_classes = sum(len(v) for v in tier_indices.values())
 
     def _get_tier(self, c: int) -> str:
@@ -133,15 +86,13 @@ class TieredPerClassASL(nn.Module):
 
     def _asl_col(self, p: torch.Tensor, t: torch.Tensor,
                   gp: float, gn: float, clip: float) -> torch.Tensor:
-        # Luôn clamp pn dù clip=0 để tránh log(0) khi p→1
         pn  = (p - clip).clamp(min=1e-8, max=1.0 - 1e-8)
-        p_s = p.clamp(min=1e-8, max=1.0 - 1e-8)   # p an toàn cho log và power
+        p_s = p.clamp(min=1e-8, max=1.0 - 1e-8)   
         lp  = t       * torch.log(p_s)
         ln  = (1 - t) * torch.log(1.0 - pn)
-        # Clamp base trước khi lũy thừa phân số để tránh grad = inf
         if gp > 0: lp = ((1.0 - p_s) ** gp) * lp
         if gn > 0: ln = (pn           ** gn) * ln
-        return -(lp + ln)   # (B,)
+        return -(lp + ln)   
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
         p    = torch.sigmoid(logits)
@@ -151,13 +102,8 @@ class TieredPerClassASL(nn.Module):
             tier       = self._get_tier(c)
             gp, gn, cl = self.params[tier]
             cols.append(self._asl_col(p[:, c], targets[:, c], gp, gn, cl).unsqueeze(1))
-        loss = torch.cat(cols, dim=1)   # (B, C)
+        loss = torch.cat(cols, dim=1)   
         return loss.mean() if self.reduction == "mean" else loss.sum() if self.reduction == "sum" else loss
-
-
-# =============================================================================
-#  5. Factory
-# =============================================================================
 
 def get_loss_fn(
     cfg:         dict,
@@ -165,16 +111,7 @@ def get_loss_fn(
     pos_weight:  Optional[torch.Tensor] = None,
     tier_indices: Optional[Dict[str, List[int]]] = None,
 ) -> nn.Module:
-    """
-    Build and return the loss function.
-
-    Args:
-        cfg:          Config dict with a "training" key.
-        device:       Target device.
-        pos_weight:   (C,) or (1,) tensor for bce_weighted.
-        tier_indices: {"very_rare": [...], "rare": [...], "common": [...]}
-                      Required for per_class_asl.
-    """
+  
     t     = cfg.get("training", {})
     name  = t.get("loss", "bce_weighted").lower().strip()
 
