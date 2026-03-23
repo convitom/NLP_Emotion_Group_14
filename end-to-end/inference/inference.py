@@ -1,13 +1,3 @@
-"""
-inference.py  —  End-to-End Ekman Emotion Inference
-=====================================================
-Model: 1 model, 7-class multi-label (6 emotions + neutral).
-Saliency: Gradient x Embedding (text analogue of Grad-CAM).
-
-Cách dùng: chỉnh CONFIG bên dưới rồi chạy
-    python inference/inference.py
-"""
-
 from __future__ import annotations
 
 import re
@@ -21,7 +11,6 @@ import torch
 import torch.nn as nn
 from transformers import AutoModel, AutoTokenizer
 
-# ── resolve project root (thư mục chứa src/) ─────────────────────────────────
 _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
@@ -35,23 +24,15 @@ from grad_cam import TokenSaliency, compute_saliency_for_classes
 NEUTRAL_IDX   = CLASS_NAMES.index("neutral")
 EMOTION_NAMES = [c for c in CLASS_NAMES if c != "neutral"]
 
-# =============================================================================
-#  CONFIG — chỉnh ở đây rồi chạy
-# =============================================================================
-
-# Đường dẫn đến file checkpoint .pth
 model = "electra"  
 CHECKPOINT = r"D:\USTH\nlp\NLP_Emotion_Group_14\end-to-end\results\{model}\checkpoints\{model}_e2e_emotion.pth".format(model=model)
 
-# Đường dẫn config yaml
 CONFIG = r"D:\USTH\nlp\NLP_Emotion_Group_14\end-to-end\config\config.yaml"
 
-WINDOW    = 0     # số câu context mỗi bên; 0 = tách câu đơn (khớp distribution train)
-TOP_K     = 10     # số token influential hiển thị mỗi emotion
-SALIENCY  = True   # False = nhanh hơn, không có giải thích token
-SHOW_JSON = False  # True = in JSON thay vì pretty print
-
-# ── Paste đoạn văn vào đây ────────────────────────────────────────────────────
+WINDOW    = 0     
+TOP_K     = 10    
+SALIENCY  = True  
+SHOW_JSON = False  
 
 TEXT_1 = """
 Last night was fire!
@@ -59,12 +40,6 @@ Last night was fire!
 
 
 TEXTS = [TEXT_1]
-
-# =============================================================================
-
-
-#  Model — giống hệt class trong train.py để load_state_dict khớp
-# ─────────────────────────────────────────────────────────────────────────────
  
 class EncoderForClassification(nn.Module):
     """7-head multi-label classifier — phải giống hệt class trong train.py."""
@@ -84,12 +59,7 @@ class EncoderForClassification(nn.Module):
                 attention_mask: torch.Tensor) -> torch.Tensor:
         out = self.backbone(input_ids=input_ids, attention_mask=attention_mask)
         cls = self.dropout(out.last_hidden_state[:, 0, :])
-        return torch.cat([h(cls) for h in self.classifiers], dim=1)  # (B, 7)
- 
- 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Output data classes
-# ─────────────────────────────────────────────────────────────────────────────
+        return torch.cat([h(cls) for h in self.classifiers], dim=1)  
  
 @dataclass
 class EmotionScore:
@@ -182,12 +152,6 @@ class DocumentResult:
             ],
         }
  
- 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Sentence splitter
-# ─────────────────────────────────────────────────────────────────────────────
- 
-# nltk sentence tokenizer (tải punkt nếu chưa có)
 try:
     import nltk
     try:
@@ -202,12 +166,7 @@ try:
     _USE_NLTK = True
 except ImportError:
     _USE_NLTK = False
- 
-# Fallback regex — chỉ dùng khi không có nltk
 _SENT_RE = re.compile(r'(?<=[.!?…])\s+', re.UNICODE)
- 
- 
-# Tách câu dài thành chunk theo dấu phẩy / dấu chấm phẩy
 _COMMA_RE = re.compile(r'(?<=,|;)\s+')
  
  
@@ -221,13 +180,11 @@ def _chunk_long_sentence(
     """
     ids = tokenizer.encode(sent, add_special_tokens=True)
     if len(ids) <= max_tokens:
-        return [sent]   # đủ ngắn, không cần làm gì
+        return [sent]   
  
-    # Tách tại dấu phẩy / chấm phẩy
     parts = _COMMA_RE.split(sent)
     if len(parts) == 1:
-        # Không có dấu phẩy → truncate theo token (mất ý cuối, ít xảy ra)
-        safe_ids = ids[:max_tokens - 1]   # bỏ [SEP] cuối nếu cần
+        safe_ids = ids[:max_tokens - 1]  
         return [tokenizer.decode(safe_ids, skip_special_tokens=True)]
  
     chunks: List[str] = []
@@ -251,25 +208,9 @@ def split_sentences(
     tokenizer=None,
     max_tokens: int = 128,
 ) -> List[str]:
-    """
-    Tách văn bản thành danh sách câu, đảm bảo mỗi câu <= max_tokens token.
- 
-    Bước 1 — tách câu bằng nltk (hoặc regex fallback).
-    Bước 2 — câu nào vẫn quá dài thì tách tiếp tại dấu phẩy / chấm phẩy.
- 
-    Tham số
-    -------
-    tokenizer : AutoTokenizer | None
-        Nếu truyền vào thì đếm token chính xác.
-        Nếu None thì ước lượng bằng words × 1.3 (an toàn hơn).
-    max_tokens : int
-        Ngưỡng token tối đa mỗi chunk (nên bằng max_length trong config).
-    """
     text = text.strip()
     if not text:
         return []
- 
-    # ── Bước 1: tách câu ──────────────────────────────────────────────────────
     lines = [l.strip() for l in text.splitlines() if l.strip()]
     raw_sentences: List[str] = []
     for line in lines:
@@ -288,20 +229,15 @@ def split_sentences(
  
     if not raw_sentences:
         return [text]
- 
-    # ── Bước 2: chunk câu dài ─────────────────────────────────────────────────
-    # Dùng tokenizer nếu có, fallback về ước lượng word-based
     result: List[str] = []
     for sent in raw_sentences:
         if tokenizer is not None:
             result.extend(_chunk_long_sentence(sent, tokenizer, max_tokens))
         else:
-            # Ước lượng: 1 word ≈ 1.3 token (BPE/WordPiece trung bình)
             est_tokens = len(sent.split()) * 1.3
             if est_tokens <= max_tokens:
                 result.append(sent)
             else:
-                # Không có tokenizer thực → tách theo dấu phẩy thủ công
                 parts = _COMMA_RE.split(sent)
                 chunk, chunk_words = "", 0
                 for part in parts:
@@ -316,12 +252,6 @@ def split_sentences(
                 if chunk:
                     result.append(chunk)
     return result or [text]
- 
- 
-# ─────────────────────────────────────────────────────────────────────────────
-#  Inference engine
-# ─────────────────────────────────────────────────────────────────────────────
- 
 class EmotionInference:
  
     def __init__(
@@ -341,8 +271,6 @@ class EmotionInference:
  
         self.compute_saliency = compute_saliency
         self.max_length       = int(cfg["data"].get("max_length", 128))
- 
-        # ── Load checkpoint ───────────────────────────────────────────────────
         print(f"[inference] Loading: {checkpoint_path}")
         ckpt = torch.load(checkpoint_path, map_location=self.device,
                           weights_only=False)
@@ -355,9 +283,6 @@ class EmotionInference:
         print(f"  model={model_name}  pretrained={pretrained_name}")
         print(f"  epoch={ckpt.get('epoch', '?')}  "
               f"threshold={self.threshold}  num_labels={num_labels}")
- 
-        # ── Build model trực tiếp từ pretrained_name trong checkpoint ─────────
-        # Không dùng build_model() để tránh phụ thuộc vào cfg["e2e"] structure.
         dropout = float(cfg["e2e"]["model"].get("dropout", 0.1))
         self.model = EncoderForClassification(
             pretrained_name=pretrained_name,
@@ -370,8 +295,6 @@ class EmotionInference:
  
         self.tokenizer = AutoTokenizer.from_pretrained(pretrained_name)
         print("[inference] Ready.\n")
- 
-    # ── Helpers ───────────────────────────────────────────────────────────────
  
     def _enc(self, text: str) -> dict:
         return self.tokenizer(
@@ -412,8 +335,6 @@ class EmotionInference:
             self.model.zero_grad()
         return sal
  
-    # ── Predict ───────────────────────────────────────────────────────────────
- 
     def predict(
         self,
         text:         str,
@@ -427,7 +348,6 @@ class EmotionInference:
         sent_results: List[SentenceResult] = []
  
         for idx, sent in enumerate(sentences):
-            # Sliding-window context
             if window == 0:
                 ctx = sent
             else:
@@ -435,11 +355,8 @@ class EmotionInference:
                 right = sentences[idx + 1: idx + 1 + window]
                 ctx   = " ".join(left + [sent] + right)
  
-            # Forward pass
-            probs         = self._forward_probs(ctx)       # (7,)
-            detected_mask = probs >= self.threshold         # (7,) bool
- 
-            # Không class nào vượt threshold → fallback neutral
+            probs         = self._forward_probs(ctx)       
+            detected_mask = probs >= self.threshold       
             if not detected_mask.any():
                 detected_mask[NEUTRAL_IDX] = True
  
@@ -456,8 +373,6 @@ class EmotionInference:
                 bool(detected_mask[NEUTRAL_IDX]) and
                 not detected_mask[:NEUTRAL_IDX].any()
             )
- 
-            # Saliency chỉ cho emotion classes được detect (không tính neutral)
             saliency_map: Dict[str, List[TokenSaliency]] = {}
             if self.compute_saliency and not sent_is_neutral:
                 emo_indices = [i for i in range(NEUTRAL_IDX) if detected_mask[i]]
@@ -477,8 +392,6 @@ class EmotionInference:
             ))
  
         return self._aggregate(text, sent_results, top_k_tokens)
- 
-    # ── Aggregate ─────────────────────────────────────────────────────────────
  
     def _aggregate(
         self,
@@ -533,12 +446,6 @@ class EmotionInference:
             is_neutral=True,
             top_tokens={},
         )
- 
- 
-# =============================================================================
-#  Entry point
-# =============================================================================
- 
 if __name__ == "__main__":
     import json
  
