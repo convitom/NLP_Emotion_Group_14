@@ -56,11 +56,7 @@ from src.utils import (
 )
 from src.train import build_model
 
-
-# =============================================================================
 #  Plotting helpers
-# =============================================================================
-
 def _plot_f1_bar(f1s, names, path, title=""):
     fig, ax = plt.subplots(figsize=(max(8, len(names) * 1.1), 5))
     colors  = ["#e74c3c" if v < 0.5 else "#f39c12" if v < 0.7 else "#2ecc71" for v in f1s]
@@ -227,10 +223,7 @@ def _plot_confusion_multilabel(y_true, y_pred, names, path, title=""):
     plt.close(fig)
 
 
-# =============================================================================
 #  Inference helper
-# =============================================================================
-
 def _infer(model, loader, device, desc="Inference") -> Tuple[np.ndarray, np.ndarray]:
     probs_list, labels_list = [], []
     pbar = tqdm(loader, desc=desc, leave=True, dynamic_ncols=True, unit="batch")
@@ -262,10 +255,7 @@ def _load_checkpoint(run_dir: str, stage: str, cfg: dict, device: torch.device):
     return model, ckpt
 
 
-# =============================================================================
 #  Evaluate Stage 1
-# =============================================================================
-
 def evaluate_stage1(
     config_path: str = "config/config.yaml",
     run_dir:     str = None,
@@ -463,10 +453,7 @@ def evaluate_stage2(
             "best_thresholds": best_ts, "out_dir": out_dir}
 
 
-# =============================================================================
 #  End-to-End Evaluation (7 classes)
-# =============================================================================
-
 def evaluate_end_to_end(
     config_path: str = "config/config.yaml",
     run_dir:     str = None,
@@ -617,7 +604,6 @@ def evaluate_end_to_end(
                                os.path.join(out_dir, "e2e_confusion.png"),
                                "End-to-End Per-Class Confusion Matrices (test set)")
     # Also save a single aggregated 7-class confusion matrix
-    # (argmax prediction for samples predicted as exactly one class)
     y_true_single = np.argmax(y_true_7, axis=1)
     y_pred_single = np.argmax(y_pred_7, axis=1)
     # Only use rows where ground-truth has exactly one active label
@@ -638,10 +624,7 @@ def evaluate_end_to_end(
             "out_dir": out_dir}
 
 
-# =============================================================================
 #  CLI
-# =============================================================================
-
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode",    type=str, default="all",
