@@ -659,20 +659,24 @@ def get_dataloaders(
 
         # map sang mode đầy đủ
         if sample_mode == "down":
-            mode = "downsample"
+            train_texts, train_labels_6, has_emotion_train = _resample_stage1(
+                train_texts,
+                train_labels_6,
+                has_emotion_train,
+                mode="downsample",
+                ratio=ratio,
+                seed=seed,
+            )
+            
         elif sample_mode == "over":
-            mode = "oversample"
-        else:
-            raise ValueError(f"Invalid sample mode: {sample_mode}. Use 'down' or 'over'.")
-
-        train_texts, train_labels_6, has_emotion_train = _resample_stage1(
-            train_texts,
-            train_labels_6,
-            has_emotion_train,
-            mode=mode,
-            ratio=ratio,
-            seed=seed,
-        )
+            train_texts, train_labels_6, has_emotion_train = _resample_stage1(
+                train_texts,
+                train_labels_6,
+                has_emotion_train,
+                mode="oversample",
+                ratio=ratio,
+                seed=seed,
+            )
 
         train_ds = EkmanDataset(train_texts, train_labels_6, tokenizer, max_length,
                                 stage="stage1", emotion_only=False)

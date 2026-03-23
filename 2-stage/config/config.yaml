@@ -44,7 +44,7 @@ stage1:
     loss:     "bce_weighted"
 
     # Sampling
-    sample: "down"  # down / over
+    sample: "down"  # down / over / None
     ratio:    1.0     
 
 
