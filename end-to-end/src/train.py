@@ -1,28 +1,3 @@
-"""
-src/train.py
-Single-Stage End-to-End Ekman Classification — Training.
-
-Task   : 7-class multi-label (6 emotions + neutral), ALL samples.
-Model  : EncoderForClassification with 7 independent output heads.
-Outputs: <run_base_dir>/run_e2e/<model_name>[_N]/
-
-Output structure:
-    <run_base_dir>/run_e2e/<model>/
-        checkpoints/best.pth
-        logs/training_log.csv
-        logs/config.txt
-        results/                ← filled by test.py
-
-CLI:
-    python src/train.py
-    python src/train.py --config config/config.yaml
-    python src/train.py --run_dir /content/drive/MyDrive/run_e2e/deberta
-
-Notebook:
-    from src.train import train
-    result = train(config_path="config/config.yaml")
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -56,11 +31,6 @@ from src.utils import (
 )
 from models.loss import get_loss_fn
 
-
-# =============================================================================
-#  Model
-# =============================================================================
-
 class EncoderForClassification(nn.Module):
     """7-head multi-label classifier (6 emotions + neutral)."""
 
@@ -81,7 +51,7 @@ class EncoderForClassification(nn.Module):
     def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
         out = self.backbone(input_ids=input_ids, attention_mask=attention_mask)
         cls = self.dropout(out.last_hidden_state[:, 0, :])
-        return torch.cat([h(cls) for h in self.classifiers], dim=1)   # (B, 7)
+        return torch.cat([h(cls) for h in self.classifiers], dim=1)   
 
 
 def _apply_freeze_backbone(model: nn.Module) -> None:
@@ -127,12 +97,6 @@ def build_model(stage_cfg: dict, num_labels: int = NUM_CLASSES) -> nn.Module:
         print(f"[build_model] finetune — full backbone fine-tuning")
 
     return model
-
-
-# =============================================================================
-#  Run directory  (YOLO-style)
-# =============================================================================
-
 def get_run_dir(cfg: dict) -> Tuple[str, str]:
     base       = cfg.get("run_base_dir", ".")
     model_name = cfg["e2e"]["model"]["name"]
@@ -183,11 +147,6 @@ def get_existing_run_dir(cfg: dict) -> str:
     _, latest = sorted(candidates)[-1]
     return latest
 
-
-# =============================================================================
-#  One-epoch helper
-# =============================================================================
-
 def _run_epoch(
     model, loader, criterion, optimizer, scheduler, scaler,
     device, phase, epoch, total_epochs,
@@ -225,7 +184,7 @@ def _run_epoch(
                     if torch.isnan(grad_norm) or torch.isinf(grad_norm):
                         print(f"\nNaN/Inf gradient (norm={grad_norm:.4f}) — skipping batch, resetting scaler. Đây là tính năng, ko phải bug :)")
                         optimizer.zero_grad(set_to_none=True)
-                        scaler.update()  # scaler tự giảm scale factor, KHÔNG step optimizer
+                        scaler.update()  
                         continue
                     scaler.step(optimizer)
                     scaler.update()
@@ -262,22 +221,10 @@ def _run_epoch(
 
     return loss_meter.avg, metrics
 
-
-# =============================================================================
-#  Main training function
-# =============================================================================
-
 def train(
     config_path: str = "config/config.yaml",
     run_dir:     str = None,
 ) -> Dict:
-    """
-    Train single-stage 7-class model.
-
-    Returns:
-        dict with keys: run_dir, run_name, best_val_macro_f1,
-                        best_epoch, best_metrics, log_path, checkpoint_path.
-    """
     cfg       = load_config(config_path)
     stage_cfg = cfg["e2e"]
     train_cfg = stage_cfg["training"]
@@ -303,8 +250,6 @@ def train(
         use_amp    = False
         amp_dtype  = torch.float32
         use_scaler = False
-
-    # ── Run directory ─────────────────────────────────────────────────────────
     if run_dir is None:
         run_dir, run_name = get_run_dir(cfg)
         print(f"\n{'='*62}\n  New run  : {run_name}\n  Path     : {run_dir}\n{'='*62}")
@@ -313,22 +258,17 @@ def train(
         print(f"\n{'='*62}\n  Resuming : {run_name}\n{'='*62}")
 
     print(f"[train] Device={device}  AMP={use_amp} ({amp_dtype_str})")
-
-    # ── Data ──────────────────────────────────────────────────────────────────
     train_loader, val_loader, _, info = get_dataloaders(cfg)
     pos_weight   = info["pos_weight"]
     num_labels   = info["num_labels"]
     tier_indices = info["tier_indices"]
     pretrained   = info["pretrained"]
-
-    # ── Model ─────────────────────────────────────────────────────────────────
     model      = build_model(stage_cfg, num_labels=num_labels).to(device)
     model_name = stage_cfg["model"]["name"]
     n_params   = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"[train] Model  : {model_name}  ({pretrained})")
     print(f"[train] Params : {n_params:,}  |  Labels: {num_labels}")
 
-    # ── Loss / Optimizer / Scheduler ──────────────────────────────────────────
     cfg_for_loss = {"training": dict(train_cfg)}
     criterion    = get_loss_fn(cfg_for_loss, device, pos_weight=pos_weight,
                                tier_indices=tier_indices)
@@ -337,7 +277,6 @@ def train(
     scheduler    = get_scheduler(optimizer, cfg_for_loss, num_training_steps=total_steps)
     scaler       = GradScaler() if use_scaler else None
 
-    # ── Paths ─────────────────────────────────────────────────────────────────
     ckpt_path = os.path.join(run_dir, "checkpoints", "best.pth")
     log_path  = os.path.join(run_dir, "logs",        "training_log.csv")
 
@@ -349,7 +288,6 @@ def train(
     _save_config_summary(run_dir, cfg, info, n_params,
                          len(train_loader.dataset), len(val_loader.dataset))
 
-    # ── Training loop ─────────────────────────────────────────────────────────
     best_val_macro_f1 = -1.0
     best_metrics: Dict[str, float] = {}
     best_epoch    = 0
@@ -429,11 +367,6 @@ def train(
         "checkpoint_path":    ckpt_path,
     }
 
-
-# =============================================================================
-#  Config summary
-# =============================================================================
-
 def _save_config_summary(run_dir, cfg, info, n_params, n_train, n_val):
     stage_cfg     = cfg["e2e"]
     train_cfg     = stage_cfg["training"]
@@ -486,10 +419,6 @@ def _save_config_summary(run_dir, cfg, info, n_params, n_train, n_val):
         f.write(text)
     print(f"[config] Saved → {out_path}\n")
 
-
-# =============================================================================
-#  CLI
-# =============================================================================
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
