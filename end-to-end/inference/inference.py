@@ -342,13 +342,13 @@ class EmotionInference:
         print("[inference] Ready.\n")
  
     #  Helpers
- 
+
     def _enc(self, text: str) -> dict:
         return self.tokenizer(
             text,
             max_length=self.max_length,
             truncation=True,
-            padding="max_length",
+            padding=False,
             return_tensors="pt",
         )
  
